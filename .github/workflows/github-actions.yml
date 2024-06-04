@@ -1,5 +1,5 @@
 name: assignment-test
-on: 
+on:
     push:
         tags-ignore:
             - '*'
