@@ -1,9 +1,10 @@
 *.o
-writer
+.ccls-cache
+.direnv
+.vscode/
 Test_*_Runner.c
+aesd-build
 build/
 crosstool-ng
-aesd-build
-.vscode/
 test.sh.log
-.direnv
+writer

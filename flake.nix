@@ -1,7 +1,7 @@
 {
   description = "Development environment flake for ECEA 5305";
 
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.05";
 
   outputs = { nixpkgs, ... }:
     let
@@ -11,8 +11,10 @@
     {
       devShells.${system}.default = pkgs.mkShell {
         packages = with pkgs; [
+          ccls
           cmake
           gcc
+          gdb
           ruby
         ];
       };
