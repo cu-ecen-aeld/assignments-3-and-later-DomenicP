@@ -1,18 +1,17 @@
-#!/usr/bin/env bash
+#!/bin/sh
 
 # http://redsymbol.net/articles/unofficial-bash-strict-mode/
-set -euo pipefail
-IFS=$'\n\t'
+set -eu
 
 readonly SUCCESS=0
 readonly FAIL=1
 
 main() {
     check_argc "$@"
-    local filesdir="$1"
-    local searchstr="$2"
-    check_filesdir "$filesdir"
-    search_dir_for_str "$filesdir" "$searchstr"
+    FILESDIR="$1"
+    SEARCHSTR="$2"
+    check_filesdir "$FILESDIR"
+    search_dir_for_str "$FILESDIR" "$SEARCHSTR"
     exit $SUCCESS
 }
 
@@ -35,11 +34,11 @@ check_filesdir() {
 }
 
 search_dir_for_str() {
-    local filesdir="$1"
-    local searchstr="$2"
+    FILESDIR="$1"
+    SEARCHSTR="$2"
 
     # Recursively search for the string across files with grep
-    lines=$(grep -R "$searchstr" "$filesdir")
+    lines=$(grep -R "$SEARCHSTR" "$FILESDIR")
 
     # Count the number of unique files
     num_files=$(echo "$lines" | awk -F: '{ print $1 }' | uniq | wc -l)
