@@ -1,5 +1,5 @@
-#include <stdbool.h>
 #include <pthread.h>
+#include <stdbool.h>
 
 /**
  * This structure should be dynamically allocated and passed as
@@ -7,7 +7,7 @@
  * It should be returned by your thread so it can be freed by
  * the joiner thread.
  */
-struct thread_data{
+struct thread_data {
     /*
      * TODO: add other values your thread will need to manage
      * into this structure, use this structure to communicate
@@ -20,6 +20,14 @@ struct thread_data{
      * if an error occurred.
      */
     bool thread_complete_success;
+
+    /** @brief  Amount of time to wait in ms before obtaining the mutex. */
+    int wait_to_obtain_ms;
+    /** @brief  Amount of time to wait in ms before releasing the mutex. */
+    int wait_to_release_ms;
+    /** @brief  Mutex to use for synchronization. */
+    pthread_mutex_t *mutex;
+
 };
 
 
@@ -31,10 +39,10 @@ struct thread_data{
 * The start_thread_obtaining_mutex function should use dynamic memory allocation for thread_data
 * structure passed into the thread.  The number of threads active should be limited only by the
 * amount of available memory.
-* The thread started should return a pointer to the thread_data structure when it exits, which can be used
-* to free memory as well as to check thread_complete_success for successful exit.
-* If a thread was started succesfully @param thread should be filled with the pthread_create thread ID
-* coresponding to the thread which was started.
+* The thread started should return a pointer to the thread_data structure when it exits, which can
+* be used to free memory as well as to check thread_complete_success for successful exit.
+* If a thread was started succesfully @param thread should be filled with the pthread_create thread
+* ID coresponding to the thread which was started.
 * @return true if the thread could be started, false if a failure occurred.
 */
 bool start_thread_obtaining_mutex(pthread_t *thread, pthread_mutex_t *mutex,int wait_to_obtain_ms, int wait_to_release_ms);
