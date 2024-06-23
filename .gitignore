@@ -4,6 +4,7 @@
 .vscode/
 Test_*_Runner.c
 aesd-build
+aesdsocket
 build/
 crosstool-ng
 test.sh.log
