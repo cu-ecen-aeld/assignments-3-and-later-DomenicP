@@ -180,13 +180,7 @@ static void aesd_server_close_client(struct aesd_server *self);
  *
  * @return true if successful, false otherwise.
  */
-static inline void aesd_server_close(struct aesd_server *self)
-{
-    if (-1 == close(self->sock_fd_))
-    {
-        perror("server socket close");
-    }
-}
+static void aesd_server_close(struct aesd_server *self);
 
 /**
  * @brief   Try to bind the first working server address.
@@ -203,8 +197,30 @@ static int try_bind(struct addrinfo *srvs);
 
 int main(int argc, const char **argv)
 {
-    UNUSED(argc);
-    UNUSED(argv);
+    // Try to bind the server address and port
+    struct aesd_server srv;
+    if (!aesd_server_bind(&srv, PORT))
+    {
+        fprintf(stderr, "server could not bind\n");
+        return -1;
+    }
+
+    // Check for daemon mode
+    bool daemon = (argc >= 2) && (strcmp("-d", argv[1]) == 0);
+    if (daemon)
+    {
+        pid_t pid = fork();
+        if (-1 == pid)
+        {
+            perror("fork");
+            return -1;
+        }
+        if (pid != 0)
+        {
+            printf("server daemon started with PID=%d\n", pid);
+            exit(0);
+        }
+    }
 
     // Initialize syslog
     openlog("aesdsocket", 0, LOG_USER);
@@ -212,11 +228,11 @@ int main(int argc, const char **argv)
     // Register signal handlers for SIGINT and SIGTERM
     handle(SIGINT);
     handle(SIGTERM);
- 
-    struct aesd_server srv;
-    if (!(aesd_server_bind(&srv, PORT) && aesd_server_listen(&srv, BACKLOG)))
+
+    // Start listening for connections
+    if (!aesd_server_listen(&srv, BACKLOG))
     {
-        fprintf(stderr, "could not initialize server\n");
+        fprintf(stderr, "server could not start listening\n");
         return -1;
     }
 
@@ -444,6 +460,14 @@ static void aesd_server_close_client(struct aesd_server *self)
         char client_ip4_str[INET_ADDRSTRLEN];
         inet_ntop(AF_INET, &self->client_addr_.sin_addr, client_ip4_str, INET_ADDRSTRLEN);
         syslog(LOG_INFO, "Closed connection from %s", client_ip4_str);
+    }
+}
+
+static void aesd_server_close(struct aesd_server *self)
+{
+    if (-1 == close(self->sock_fd_))
+    {
+        perror("server socket close");
     }
 }
 
