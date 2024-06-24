@@ -31,7 +31,9 @@
 
 #define _GNU_SOURCE
 
+#include <arpa/inet.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <netdb.h>
 #include <signal.h>
 #include <stdbool.h>
@@ -39,6 +41,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <syslog.h>
 #include <unistd.h>
@@ -48,13 +51,32 @@
  *****************************************************************************/
 
 /** @brief  Incoming connection backlog length. */
-#define BACKLOG 5
+#define BACKLOG 5U
+/** @brief  Size of the working buffer. */
+#define BUF_SIZE 256U
 /** @brief  Output file where incoming data will be written. */
 #define OUTPUT_FILE "/var/tmp/aesdsocketdata"
 /** @brief  Port for the server to listen on. */
 #define PORT "9000"
 /** @brief  Macro to mark things (variables, parameters, return values) as unused. */
-#define UNUSED(X) (void)X
+#define UNUSED(X) (void)(X)
+
+/******************************************************************************
+ * Static global variables
+ *****************************************************************************/
+
+/** @brief  AESD server application. */
+struct aesd_server
+{
+    /** @brief  Working buffer for client IO. */
+    char buf_[BUF_SIZE];
+    /** @brief  Socket fd for the server. */
+    int sock_fd_;
+    /** @brief  Address information for the client. */
+    struct sockaddr_in client_addr_;
+    /** @brief  Socket fd for the client. */
+    int client_fd_;
+};
 
 /******************************************************************************
  * Static global variables
@@ -66,15 +88,6 @@ bool g_shutdown = false;
 /******************************************************************************
  * Static function declarations
  *****************************************************************************/
-
-/**
- * @brief   Create a socket fd and bind it to an address for listening.
- *
- * Exits the program with a failure status of -1 if the socket cannot be initialized.
- *
- * @return  The socket fd ready for listening.
- */
-static int bind_socket(void);
 
 /**
  * @brief   Register a signal with the program-specific signal handler.
@@ -93,6 +106,87 @@ static void handle(int signal);
  * @param   signal  The signal to be handled.
  */
 static void signal_handler(int signal);
+
+/**
+ * @brief   Create a socket fd and bind it to an address for listening.
+ *
+ * Exits the program with a failure status of -1 if the socket cannot be initialized.
+ *
+ * @param   self
+ * @param   port    The port that the server should listen on.
+ *
+ * @return  true if the socket was bound, false otherwise.
+ */
+static bool aesd_server_bind(struct aesd_server *self, const char *port);
+
+/**
+ * @brief   Start listening for incoming connections.
+ *
+ * Exits the program with a failure status of -1 if the socket cannot be initialized.
+ *
+ * @param   self
+ * @param   backlog     Connection backlog length.
+ *
+ * @return  true if successful, false otherwise.
+ */
+static bool aesd_server_listen(struct aesd_server *self, int backlog);
+
+/**
+ * @brief   Block and wait to accept an incoming client.
+ *
+ * @param   self
+ *
+ * @return true if successful, false otherwise.
+ */
+static bool aesd_server_accept_client(struct aesd_server *self);
+
+/**
+ * @brief   Receive data from the client and append it to the output file.
+ *
+ * Continue receiving data until a newline character is reached.
+ *
+ * @param   self
+ * @param   output_fd   Output file where data should be written.
+ *
+ * @return true if successful, false otherwise.
+ */
+static bool aesd_server_receive_data(struct aesd_server *self, int output_fd);
+
+/**
+ * @brief   Send back the current data in the output file to the client.
+ *
+ * The output file should be opened in RW mode to enable readback in this function.
+ *
+ * @param   self
+ * @param   output_fd   Output file where data should be read.
+ *
+ * @return true if successful, false otherwise.
+ */
+static bool aesd_server_send_response(struct aesd_server *self, int output_fd);
+
+/**
+ * @brief   Close the client connection and log to syslog.
+ *
+ * @param   self
+ *
+ * @return true if successful, false otherwise.
+ */
+static void aesd_server_close_client(struct aesd_server *self);
+
+/**
+ * @brief   Close the listening server socket.
+ *
+ * @param   self
+ *
+ * @return true if successful, false otherwise.
+ */
+static inline void aesd_server_close(struct aesd_server *self)
+{
+    if (-1 == close(self->sock_fd_))
+    {
+        perror("server socket close");
+    }
+}
 
 /**
  * @brief   Try to bind the first working server address.
@@ -119,29 +213,44 @@ int main(int argc, const char **argv)
     handle(SIGINT);
     handle(SIGTERM);
  
-    // Bind a socket for the server to use
-    int srv_fd = bind_socket();
-
-    // Try to start listening
-    if (-1 == listen(srv_fd, BACKLOG))
+    struct aesd_server srv;
+    if (!(aesd_server_bind(&srv, PORT) && aesd_server_listen(&srv, BACKLOG)))
     {
-        perror("listen");
-        close(srv_fd);
+        fprintf(stderr, "could not initialize server\n");
         return -1;
     }
-    printf("server listening on port " PORT "\n");
+
+    // Open the output file
+    int output_fd = open(OUTPUT_FILE, O_RDWR | O_CREAT | O_TRUNC, 0644);
 
     while (!g_shutdown)
     {
-        struct sockaddr client_addr;
-        socklen_t client_addrlen;
-        int client_fd = accept(srv_fd, &client_addr, &client_addrlen);
+        if (!aesd_server_accept_client(&srv))
+        {
+            fprintf(stderr, "client not accepted\n");
+            continue;
+        }
 
-        close(client_fd);
+        if (!aesd_server_receive_data(&srv, output_fd))
+        {
+            fprintf(stderr, "error receiving client data\n");
+        }
+        else if (!aesd_server_send_response(&srv, output_fd))
+        {
+            fprintf(stderr, "error sending client response\n");
+        }
+
+        aesd_server_close_client(&srv);
     }
 
-    printf("shutting down");
-    close(srv_fd);
+    printf("shutting down\n");
+
+    // Close and delete the output file
+    close(output_fd);
+    unlink(OUTPUT_FILE);
+
+    // Close the server socket
+    aesd_server_close(&srv);
 
     return 0;
 }
@@ -149,37 +258,6 @@ int main(int argc, const char **argv)
 /******************************************************************************
  * Static function definitions
  *****************************************************************************/
-
-static int bind_socket(void)
-{
-    // Setup hints for TCP server sockets
-    struct addrinfo hints = {
-        // Use IPv4
-        .ai_family = AF_INET,
-        // Use a TCP socket
-        .ai_socktype = SOCK_STREAM,
-        // Set up for localhost address
-        .ai_flags = AI_PASSIVE,
-    };
-
-    // Lookup potential addresses for the server
-    struct addrinfo *srv_info = NULL;
-    int result = getaddrinfo(NULL, PORT, &hints, &srv_info);
-    if (result != 0)
-    {
-        fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(result));
-        return -1;
-    }
-
-    // Try to bind the first working address
-    int sockfd = try_bind(srv_info);
-
-    // Free memory for getaddrinfo results
-    freeaddrinfo(srv_info);
-
-    // If we haven't exited by this point we should have a bound socket ready to go
-    return sockfd;
-}
 
 static void handle(int sig)
 {
@@ -199,6 +277,7 @@ static void handle(int sig)
 
 static void signal_handler(int sig)
 {
+    syslog(LOG_INFO, "Caught signal, exiting");
     if (sig == SIGINT || sig == SIGTERM)
     {
         g_shutdown = true;
@@ -207,6 +286,164 @@ static void signal_handler(int sig)
     {
         fprintf(stderr, "received unhandled signal %d\n", sig);
         exit(-1);
+    }
+}
+
+static bool aesd_server_bind(struct aesd_server *self, const char *port)
+{
+    // Setup hints for TCP server sockets
+    struct addrinfo hints = {
+        // Use IPv4
+        .ai_family = AF_INET,
+        // Use a TCP socket
+        .ai_socktype = SOCK_STREAM,
+        // Set up for localhost address
+        .ai_flags = AI_PASSIVE,
+    };
+
+    // Lookup potential addresses for the server
+    struct addrinfo *srv_info = NULL;
+    int result = getaddrinfo(NULL, port, &hints, &srv_info);
+    if (result != 0)
+    {
+        fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(result));
+        return true;
+    }
+
+    // Try to bind the first working address
+    self->sock_fd_ = try_bind(srv_info);
+
+    // Free memory for getaddrinfo results
+    freeaddrinfo(srv_info);
+
+    // If we haven't exited by this point we should have a bound socket ready to go
+    return true;
+}
+
+static bool aesd_server_listen(struct aesd_server *self, int backlog)
+{
+    if (-1 == listen(self->sock_fd_, backlog))
+    {
+        perror("listen");
+        close(self->sock_fd_);
+        return false;
+    }
+    printf("server listening on port " PORT "\n");
+    return true;
+}
+
+static bool aesd_server_accept_client(struct aesd_server *self)
+{
+    memset(&self->client_addr_, 0, sizeof(self->client_addr_));
+    socklen_t client_addrlen = sizeof(self->client_addr_);
+
+    // Accept an incoming connection
+    self->client_fd_ = accept(self->sock_fd_, &self->client_addr_, &client_addrlen);
+    if (-1 == self->client_fd_)
+    {
+        perror("accept");
+        return false;
+    }
+
+    // Log the client connection
+    char client_ip4_str[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &self->client_addr_.sin_addr, client_ip4_str, INET_ADDRSTRLEN);
+    syslog(LOG_INFO, "Accepted connection from %s", client_ip4_str);
+
+    return true;
+}
+
+static bool aesd_server_receive_data(struct aesd_server *self, int output_fd)
+{
+    // Seek to the end of the file
+    if (-1 == lseek(output_fd, 0, SEEK_END))
+    {
+        perror("lseek");
+        return false;
+    }
+
+    // Loop until all data has been received
+    bool done = false;
+    while (!done)
+    {
+        // Reset the buffer
+        memset(self->buf_, 0, BUF_SIZE);
+
+        // Receive the next data chunk
+        if (-1 == recv(self->client_fd_, self->buf_, BUF_SIZE, 0))
+        {
+            perror("recv");
+            return false;
+        }
+
+        // Default to write the whole buffer
+        size_t n = BUF_SIZE;
+
+        // Search for newline
+        char *pnewline = memchr(self->buf_, '\n', BUF_SIZE);
+        if (pnewline != NULL)
+        {
+            // Write only up to the newline and be done
+            done = true;
+            n = (size_t)(pnewline - self->buf_ + 1);
+        }
+
+        // Write to disk
+        if (-1 == write(output_fd, self->buf_, n))
+        {
+            perror("write");
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool aesd_server_send_response(struct aesd_server *self, int output_fd)
+{
+    // Seek to the start of the file
+    if (-1 == lseek(output_fd, 0, SEEK_SET))
+    {
+        perror("lseek");
+        return false;
+    }
+
+    // Loop until the entire response has been sent
+    bool done = false;
+    while (!done)
+    {
+        ssize_t n = read(output_fd, self->buf_, BUF_SIZE);
+        if (-1 == n)
+        {
+            perror("read");
+            return false;
+        }
+        else if (self->buf_[n - 1] == '\n')
+        {
+            done = true;
+        }
+        if (-1 == send(self->client_fd_, self->buf_, (size_t)n, 0))
+        {
+            perror("send");
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static void aesd_server_close_client(struct aesd_server *self)
+{
+    if (self->client_fd_ >= 0)
+    {
+        if (-1 == close(self->client_fd_))
+        {
+            perror("client socket close");
+        }
+
+        // Log the client disconnection
+        char client_ip4_str[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &self->client_addr_.sin_addr, client_ip4_str, INET_ADDRSTRLEN);
+        syslog(LOG_INFO, "Closed connection from %s", client_ip4_str);
     }
 }
 
