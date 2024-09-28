@@ -4,7 +4,7 @@ CROSS_COMPILE ?=
 CC := $(CROSS_COMPILE)gcc
 INCLUDE_DIRS := include
 CFLAGS := -std=c99 -Wall -Wextra -pedantic -Wunused -Wconversion -I $(INCLUDE_DIRS)
-LDFLAGS := -pthread
+LDFLAGS := -lrt -pthread
 
 SRC_FILES :=
 SRC_FILES += src/aesd_server.c

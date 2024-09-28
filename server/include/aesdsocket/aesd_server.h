@@ -9,6 +9,7 @@
 #include <arpa/inet.h>
 #include <pthread.h>
 #include <stdbool.h>
+#include <time.h>
 
 #include "aesdsocket/aesd_worker.h"
 #include "aesdsocket/queue.h"
@@ -34,6 +35,8 @@ struct aesd_server
     const char *port_;
     /** @brief  Socket fd for the server. */
     int sock_fd_;
+    /** @brief  Timer for printing timestamps to the data file. */
+    timer_t timer_;
     /** @brief  List of server workers. */
     struct aesd_worker_slist workers_;
 };

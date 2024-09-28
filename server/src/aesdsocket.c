@@ -72,8 +72,6 @@
 #define OUTPUT_FILE "/var/tmp/aesdsocketdata"
 /** @brief  Port for the server to listen on. */
 #define PORT "9000"
-/** @brief  Macro to mark things (variables, parameters, return values) as unused. */
-#define UNUSED(X) (void)(X)
 
 /******************************************************************************
  * Static global variables

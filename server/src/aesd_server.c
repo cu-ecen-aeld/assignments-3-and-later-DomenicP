@@ -8,6 +8,7 @@
 #include "aesdsocket/aesd_server.h"
 
 #include <netdb.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -17,11 +18,43 @@
 #include <unistd.h>
 
 /**
- * @brief   Cleanup resources used by a worker list entry.
+ * @brief   Allocate a new worker list entry.
  *
- * @param   entry   Pointer to the entry to be cleaned.
+ * @param   worker  Worker pointer to take ownership of.
+ *
+ * @return  Pointer to the new entry if successfull, `NULL` on failure.
  */
-static void cleanup_worker_entry(struct aesd_worker_entry *entry);
+static struct aesd_worker_entry *aesd_worker_entry_new(struct aesd_worker *worker);
+
+/**
+ * @brief   Free memory for a worker list entry.
+ *
+ * @param   self
+ */
+static  void aesd_worker_entry_delete(struct aesd_worker_entry *self);
+
+/**
+ * @brief   Thread join for a worker list entry.
+ *
+ * @param   self
+ */
+static inline void aesd_worker_entry_join(struct aesd_worker_entry *self)
+{
+    if (-1 == pthread_join(self->tid, NULL))
+    {
+        perror("pthread_join");
+    }
+}
+
+/** @brief  Timer alarm signal handler. */
+static void alarm_handler(int sig, siginfo_t *si, void *arg);
+
+/**
+ * @brief   Create and start the timestamp timer.
+ *
+ * @param   self
+ */
+static void start_timestamp_timer(struct aesd_server *self);
 
 /**
  * @brief   Try to bind the first working server address.
@@ -40,6 +73,7 @@ void aesd_server_init(struct aesd_server *self, size_t buf_size, int output_fd)
     self->port_ = "";
     self->sock_fd_ = -1;
     SLIST_INIT(&self->workers_);
+    start_timestamp_timer(self);
 }
 
 bool aesd_server_bind(struct aesd_server *self, const char *port)
@@ -114,9 +148,7 @@ bool aesd_server_accept_client(struct aesd_server *self)
     syslog(LOG_INFO, "Accepted connection from %s", client_ip4_str);
 
     // Allocate a worker list entry and move ownership of the worker pointer
-    struct aesd_worker_entry *entry
-        = (struct aesd_worker_entry *)malloc(sizeof(struct aesd_worker_entry));
-    entry->worker = worker;
+    struct aesd_worker_entry *entry = aesd_worker_entry_new(worker);
     worker = NULL;
 
     // Start the thread and push the entry onto the list
@@ -136,7 +168,8 @@ void aesd_server_check_workers(struct aesd_server *self)
         if (entry->worker->exited)
         {
             SLIST_REMOVE(&self->workers_, entry, aesd_worker_entry, entries);
-            cleanup_worker_entry(entry);
+            aesd_worker_entry_join(entry);
+            aesd_worker_entry_delete(entry);
             entry = NULL;
         }
     }
@@ -144,9 +177,13 @@ void aesd_server_check_workers(struct aesd_server *self)
 
 void aesd_server_shutdown(struct aesd_server *self)
 {
+    if (-1 == timer_delete(self->timer_))
+    {
+        perror("aesd_server timer_delete");
+    }
     if (-1 == close(self->sock_fd_))
     {
-        perror("server socket close");
+        perror("aesd_server socket close");
     }
     struct aesd_worker_entry *entry = NULL;
     struct aesd_worker_entry *entry_temp = NULL;
@@ -154,21 +191,109 @@ void aesd_server_shutdown(struct aesd_server *self)
     {
         entry->worker->shutdown = true;
         SLIST_REMOVE(&self->workers_, entry, aesd_worker_entry, entries);
-        cleanup_worker_entry(entry);
+        aesd_worker_entry_join(entry);
+        aesd_worker_entry_delete(entry);
         entry = NULL;
     }
     pthread_mutex_destroy(&self->output_fd_lock_);
 }
 
-static void cleanup_worker_entry(struct aesd_worker_entry *entry)
+static struct aesd_worker_entry *aesd_worker_entry_new(struct aesd_worker *worker)
 {
-    if (-1 == pthread_join(entry->tid, NULL))
+    struct aesd_worker_entry *self
+        = (struct aesd_worker_entry *)malloc(sizeof(struct aesd_worker_entry));
+    if (self != NULL)
     {
-        perror("pthread_join");
+        self->worker = worker;
     }
-    aesd_worker_delete(entry->worker);
-    entry->worker = NULL;
-    free(entry);
+    return self;
+}
+
+static void aesd_worker_entry_delete(struct aesd_worker_entry *self)
+{
+    aesd_worker_delete(self->worker);
+    self->worker = NULL;
+    free(self);
+}
+
+static void alarm_handler(int sig, siginfo_t *si, void *uc)
+{
+    (void)uc;
+
+    if (sig == SIGALRM)
+    {
+        // Format the timestamp string
+        time_t now = time(NULL);
+        struct tm *now_local = localtime(&now);
+        char timestamp_str[128];
+        size_t timestamp_str_len = strftime(
+            timestamp_str, sizeof(timestamp_str), "timestamp:%a, %d %b %Y %T %z\n", now_local
+        );
+
+        // Write the string to the output file
+        struct aesd_server *self = si->si_value.sival_ptr;
+        pthread_mutex_lock(&self->output_fd_lock_);
+        // Seek to the end of the file
+        if (-1 == lseek(self->output_fd_, 0, SEEK_END))
+        {
+            perror("timer lseek");
+        }
+        // Write to disk
+        else if (-1 == write(self->output_fd_, timestamp_str, timestamp_str_len))
+        {
+            perror("timer write");
+        }
+        pthread_mutex_unlock(&self->output_fd_lock_);
+    }
+}
+
+static void start_timestamp_timer(struct aesd_server *self)
+{
+    // Setup the alarm signal handler
+    int result = sigaction(
+        SIGALRM,
+        &(struct sigaction) {
+            .sa_flags = SA_SIGINFO,
+            .sa_sigaction = alarm_handler
+        },
+        NULL
+    );
+    if (result == -1)
+    {
+        perror("aesd_server sigaction");
+        return;
+    }
+
+    // Create the timer
+    result = timer_create(
+        CLOCK_MONOTONIC,
+        &(struct sigevent) {
+            .sigev_notify = SIGEV_SIGNAL,
+            .sigev_signo = SIGALRM,
+            .sigev_value.sival_ptr = self,
+        },
+        &self->timer_
+    );
+    if (result == -1)
+    {
+        perror("aesd_server timer_create");
+        return;
+    }
+
+    // Arm the timer
+    result = timer_settime(
+        self->timer_,
+        0,
+        &(struct itimerspec) {
+            .it_value.tv_sec = 10,
+            .it_interval.tv_sec = 10,
+        },
+        NULL
+    );
+    if (-1 == result)
+    {
+        perror("aesd_server timer_settime");
+    }
 }
 
 static int try_bind(struct addrinfo *srvs)
