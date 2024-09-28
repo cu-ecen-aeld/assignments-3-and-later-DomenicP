@@ -17,6 +17,13 @@
 #include <unistd.h>
 
 /**
+ * @brief   Cleanup resources used by a worker list entry.
+ *
+ * @param   entry   Pointer to the entry to be cleaned.
+ */
+static void cleanup_worker_entry(struct aesd_worker_entry *entry);
+
+/**
  * @brief   Try to bind the first working server address.
  *
  * @param   srvs    Potential candidates for the server address.
@@ -24,6 +31,16 @@
  * @return  The bound socket fd if successful, otherwise -1.
  */
 static int try_bind(struct addrinfo *srvs);
+
+void aesd_server_init(struct aesd_server *self, size_t buf_size, int output_fd)
+{
+    self->buf_size_ = buf_size;
+    self->output_fd_ = output_fd;
+    pthread_mutex_init(&self->output_fd_lock_, NULL);
+    self->port_ = "";
+    self->sock_fd_ = -1;
+    SLIST_INIT(&self->workers_);
+}
 
 bool aesd_server_bind(struct aesd_server *self, const char *port)
 {
@@ -71,132 +88,93 @@ bool aesd_server_listen(struct aesd_server *self, int backlog)
 
 bool aesd_server_accept_client(struct aesd_server *self)
 {
-    memset(&self->client_addr_, 0, sizeof(self->client_addr_));
-    socklen_t client_addrlen = sizeof(self->client_addr_);
+    struct aesd_worker *worker = aesd_worker_new(
+        self->buf_size_, self->output_fd_, &self->output_fd_lock_
+    );
+    if (worker == NULL)
+    {
+        perror("malloc");
+        return false;
+    }
+    socklen_t client_addr_len = sizeof(worker->client_addr);
 
     // Accept an incoming connection
-    self->client_fd_ = accept(self->sock_fd_, &self->client_addr_, &client_addrlen);
-    if (-1 == self->client_fd_)
+    worker->client_fd = accept(self->sock_fd_, &worker->client_addr, &client_addr_len);
+    if (-1 == worker->client_fd)
     {
         perror("accept");
+        aesd_worker_delete(worker);
+        worker = NULL;
         return false;
     }
 
     // Log the client connection
     char client_ip4_str[INET_ADDRSTRLEN];
-    inet_ntop(AF_INET, &self->client_addr_.sin_addr, client_ip4_str, INET_ADDRSTRLEN);
+    inet_ntop(AF_INET, &worker->client_addr.sin_addr, client_ip4_str, sizeof(client_ip4_str));
     syslog(LOG_INFO, "Accepted connection from %s", client_ip4_str);
 
-    return true;
-}
+    // Allocate a worker list entry and move ownership of the worker pointer
+    struct aesd_worker_entry *entry
+        = (struct aesd_worker_entry *)malloc(sizeof(struct aesd_worker_entry));
+    entry->worker = worker;
+    worker = NULL;
 
-bool aesd_server_receive_data(struct aesd_server *self, int output_fd)
-{
-    // Seek to the end of the file
-    if (-1 == lseek(output_fd, 0, SEEK_END))
-    {
-        perror("lseek");
-        return false;
-    }
-
-    // Loop until all data has been received
-    bool done = false;
-    while (!done)
-    {
-        // Reset the buffer
-        memset(self->buf_, 0, AESD_SERVER_BUF_SIZE);
-
-        // Receive the next data chunk
-        if (-1 == recv(self->client_fd_, self->buf_, AESD_SERVER_BUF_SIZE, 0))
-        {
-            perror("recv");
-            return false;
-        }
-
-        // Default to write the whole buffer
-        size_t n = AESD_SERVER_BUF_SIZE;
-
-        // Search for newline
-        char *pnewline = memchr(self->buf_, '\n', AESD_SERVER_BUF_SIZE);
-        if (pnewline != NULL)
-        {
-            // Write only up to the newline and be done
-            done = true;
-            n = (size_t)(pnewline - self->buf_ + 1);
-        }
-
-        // Write to disk
-        if (-1 == write(output_fd, self->buf_, n))
-        {
-            perror("write");
-            return false;
-        }
-    }
-    return true;
-}
-
-bool aesd_server_send_response(struct aesd_server *self, int output_fd)
-{
-    // Seek to the start of the file
-    if (-1 == lseek(output_fd, 0, SEEK_SET))
-    {
-        perror("lseek");
-        return false;
-    }
-
-    // Loop until the entire response has been sent
-    bool done = false;
-    while (!done)
-    {
-        ssize_t n = read(output_fd, self->buf_, AESD_SERVER_BUF_SIZE);
-        if (-1 == n)
-        {
-            perror("read");
-            return false;
-        }
-        else if (self->buf_[n - 1] == '\n')
-        {
-            done = true;
-        }
-        if (-1 == send(self->client_fd_, self->buf_, (size_t)n, 0))
-        {
-            perror("send");
-            return false;
-        }
-    }
+    // Start the thread and push the entry onto the list
+    pthread_create(&entry->tid, NULL, aesd_worker_main, entry->worker);
+    SLIST_INSERT_HEAD(&self->workers_, entry, entries);
+    entry = NULL;
 
     return true;
 }
 
-void aesd_server_close_client(struct aesd_server *self)
+void aesd_server_check_workers(struct aesd_server *self)
 {
-    if (self->client_fd_ >= 0)
+    struct aesd_worker_entry *entry = NULL;
+    struct aesd_worker_entry *entry_temp = NULL;
+    SLIST_FOREACH_SAFE(entry, &self->workers_, entries, entry_temp)
     {
-        if (-1 == close(self->client_fd_))
+        if (entry->worker->exited)
         {
-            perror("client socket close");
+            SLIST_REMOVE(&self->workers_, entry, aesd_worker_entry, entries);
+            cleanup_worker_entry(entry);
+            entry = NULL;
         }
-
-        // Log the client disconnection
-        char client_ip4_str[INET_ADDRSTRLEN];
-        inet_ntop(AF_INET, &self->client_addr_.sin_addr, client_ip4_str, INET_ADDRSTRLEN);
-        syslog(LOG_INFO, "Closed connection from %s", client_ip4_str);
     }
 }
 
-void aesd_server_close(struct aesd_server *self)
+void aesd_server_shutdown(struct aesd_server *self)
 {
     if (-1 == close(self->sock_fd_))
     {
         perror("server socket close");
     }
+    struct aesd_worker_entry *entry = NULL;
+    struct aesd_worker_entry *entry_temp = NULL;
+    SLIST_FOREACH_SAFE(entry, &self->workers_, entries, entry_temp)
+    {
+        entry->worker->shutdown = true;
+        SLIST_REMOVE(&self->workers_, entry, aesd_worker_entry, entries);
+        cleanup_worker_entry(entry);
+        entry = NULL;
+    }
+    pthread_mutex_destroy(&self->output_fd_lock_);
+}
+
+static void cleanup_worker_entry(struct aesd_worker_entry *entry)
+{
+    if (-1 == pthread_join(entry->tid, NULL))
+    {
+        perror("pthread_join");
+    }
+    aesd_worker_delete(entry->worker);
+    entry->worker = NULL;
+    free(entry);
 }
 
 static int try_bind(struct addrinfo *srvs)
 {
     // Loop through potential addresses
-    struct addrinfo *pinfo;
-    for (pinfo = srvs; pinfo != NULL; pinfo = pinfo->ai_next)
+    for (struct addrinfo *pinfo = srvs; pinfo != NULL; pinfo = pinfo->ai_next)
     {
         // Try to create a socket
         int sockfd = socket(pinfo->ai_family, pinfo->ai_socktype, pinfo->ai_protocol);
@@ -208,8 +186,8 @@ static int try_bind(struct addrinfo *srvs)
         }
 
         // Enable address reuse to avoid "already in use" error messages
-        int yes = 1;
-        if (-1 == setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes)))
+        int on = 1;
+        if (-1 == setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on)))
         {
             perror("setsockopt");
             close(sockfd);

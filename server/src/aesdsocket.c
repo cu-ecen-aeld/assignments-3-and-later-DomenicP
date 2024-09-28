@@ -66,6 +66,8 @@
 
 /** @brief  Incoming connection backlog length. */
 #define BACKLOG 5U
+/** @brief  Buffer size for clients. */
+#define BUF_SIZE 256U
 /** @brief  Output file where incoming data will be written. */
 #define OUTPUT_FILE "/var/tmp/aesdsocketdata"
 /** @brief  Port for the server to listen on. */
@@ -78,7 +80,7 @@
  *****************************************************************************/
 
 /** @brief  Global flag indicating if the sever should keep running or shutdown. */
-static bool g_shutdown = false;
+static bool g_running = true;
 
 /******************************************************************************
  * Static function declarations
@@ -101,6 +103,15 @@ static int daemonize(void);
  * @param   signal  The signal to be handled.
  */
 static void handle(int signal);
+
+/**
+ * @brief   Run the server.
+ *
+ * @param   output_fd   Output data file to be used by the server.
+ *
+ * @return  0 on success, -1 on failure.
+ */
+static int run_server(int output_fd);
 
 /**
  * @brief   Program-specific signal handler.
@@ -136,7 +147,7 @@ int main(int argc, const char **argv)
         }
         if (-1 == daemonize())
         {
-            fprintf(stderr, "Could not daemonize process");
+            fprintf(stderr, "could not daemonize process");
             return -1;
         }
     }
@@ -148,54 +159,27 @@ int main(int argc, const char **argv)
     handle(SIGINT);
     handle(SIGTERM);
 
-    // Try to bind the server address and port
-    struct aesd_server srv;
-    if (!aesd_server_bind(&srv, PORT))
-    {
-        fprintf(stderr, "server could not bind\n");
-        return -1;
-    }
-
-    // Start listening for connections
-    if (!aesd_server_listen(&srv, BACKLOG))
-    {
-        fprintf(stderr, "server could not start listening\n");
-        return -1;
-    }
-
     // Open the output file
     int output_fd = open(OUTPUT_FILE, O_RDWR | O_CREAT | O_TRUNC, 0644);
-
-    while (!g_shutdown)
+    if (-1 == output_fd)
     {
-        if (!aesd_server_accept_client(&srv))
-        {
-            fprintf(stderr, "client not accepted\n");
-            continue;
-        }
-
-        if (!aesd_server_receive_data(&srv, output_fd))
-        {
-            fprintf(stderr, "error receiving client data\n");
-        }
-        else if (!aesd_server_send_response(&srv, output_fd))
-        {
-            fprintf(stderr, "error sending client response\n");
-        }
-
-        aesd_server_close_client(&srv);
+        perror("open output file");
+        return -1;
     }
 
-    printf("shutting down\n");
+    int result = run_server(output_fd);
 
     // Close and delete the output file
-    close(output_fd);
-    unlink(OUTPUT_FILE);
+    if (-1 == close(output_fd))
+    {
+        perror("close output file");
+    }
+    if (-1 == unlink(OUTPUT_FILE))
+    {
+        perror("unlink output file");
+    }
 
-    // Close the server socket
-    aesd_server_close(&srv);
-
-    return 0;
+    return result;
 }
 
 /******************************************************************************
@@ -252,12 +236,48 @@ static void handle(int sig)
     }
 }
 
+static int run_server(int output_fd)
+{
+    // Try to bind the server address and port
+    struct aesd_server srv = {0};
+    aesd_server_init(&srv, BUF_SIZE, output_fd);
+    if (!aesd_server_bind(&srv, PORT))
+    {
+        fprintf(stderr, "server could not bind to port " PORT "\n");
+        return -1;
+    }
+
+    // Start listening for connections
+    if (!aesd_server_listen(&srv, BACKLOG))
+    {
+        fprintf(stderr, "server could not start listening\n");
+        return -1;
+    }
+
+    while (g_running)
+    {
+        if (!aesd_server_accept_client(&srv))
+        {
+            fprintf(stderr, "client not accepted\n");
+            continue;
+        }
+        aesd_server_check_workers(&srv);
+    }
+
+    printf("shutting down\n");
+
+    // Shutdown the server
+    aesd_server_shutdown(&srv);
+
+    return 0;
+}
+
 static void signal_handler(int sig)
 {
-    syslog(LOG_INFO, "Caught signal, exiting");
+    syslog(LOG_INFO, "caught signal, exiting");
     if (sig == SIGINT || sig == SIGTERM)
     {
-        g_shutdown = true;
+        g_running = false;
     }
     else
     {

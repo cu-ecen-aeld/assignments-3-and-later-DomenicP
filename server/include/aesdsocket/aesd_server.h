@@ -7,26 +7,45 @@
 #define AESDSOCKET__AESD_SERVER_H_
 
 #include <arpa/inet.h>
+#include <pthread.h>
 #include <stdbool.h>
 
-/** @brief  Size of the working buffer. */
-#define AESD_SERVER_BUF_SIZE 256U
+#include "aesdsocket/aesd_worker.h"
+#include "aesdsocket/queue.h"
+
+struct aesd_worker_entry {
+    pthread_t tid;
+    struct aesd_worker *worker;
+    SLIST_ENTRY(aesd_worker_entry) entries;
+};
+
+SLIST_HEAD(aesd_worker_slist, aesd_worker_entry);
 
 /** @brief  AESD server application. */
 struct aesd_server
 {
-    /** @brief  Working buffer for client IO. */
-    char buf_[AESD_SERVER_BUF_SIZE];
+    /** @brief  Buffer size to allocate for client workers. */
+    size_t buf_size_;
+    /** @brief  Output file descriptor. */
+    int output_fd_;
+    /** @brief  Mutex for output file. */
+    pthread_mutex_t output_fd_lock_;
     /** @brief  Port on which the server is listening. */
     const char *port_;
     /** @brief  Socket fd for the server. */
     int sock_fd_;
-    /** @brief  Address information for the client. */
-    struct sockaddr_in client_addr_;
-    /** @brief  Socket fd for the client. */
-    int client_fd_;
+    /** @brief  List of server workers. */
+    struct aesd_worker_slist workers_;
 };
 
+/**
+ * @brief   Initialize the server.
+ *
+ * @param   self
+ * @param   buf_size    Buffer size in bytes for client workers.
+ * @param   output_fd   Output file descriptor.
+ */
+void aesd_server_init(struct aesd_server *self, size_t buf_size, int output_fd);
 
 /**
  * @brief   Create a socket fd and bind it to an address for listening.
@@ -62,45 +81,19 @@ bool aesd_server_listen(struct aesd_server *self, int backlog);
 bool aesd_server_accept_client(struct aesd_server *self);
 
 /**
- * @brief   Receive data from the client and append it to the output file.
- *
- * Continue receiving data until a newline character is reached.
+ * @brief   Check worker threads and cleanup resources.
  *
  * @param   self
- * @param   output_fd   Output file where data should be written.
- *
- * @return true if successful, false otherwise.
  */
-bool aesd_server_receive_data(struct aesd_server *self, int output_fd);
+void aesd_server_check_workers(struct aesd_server *self);
 
 /**
- * @brief   Send back the current data in the output file to the client.
- *
- * The output file should be opened in RW mode to enable readback in this function.
- *
- * @param   self
- * @param   output_fd   Output file where data should be read.
- *
- * @return true if successful, false otherwise.
- */
-bool aesd_server_send_response(struct aesd_server *self, int output_fd);
-
-/**
- * @brief   Close the client connection and log to syslog.
+ * @brief   Close the listening server socket and stop worker threads.
  *
  * @param   self
  *
  * @return true if successful, false otherwise.
  */
-void aesd_server_close_client(struct aesd_server *self);
-
-/**
- * @brief   Close the listening server socket.
- *
- * @param   self
- *
- * @return true if successful, false otherwise.
- */
-void aesd_server_close(struct aesd_server *self);
+void aesd_server_shutdown(struct aesd_server *self);
 
 #endif  // AESDSOCKET__AESD_SERVER_H_
