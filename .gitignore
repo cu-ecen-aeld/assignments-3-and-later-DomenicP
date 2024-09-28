@@ -8,4 +8,7 @@ aesdsocket
 build/
 crosstool-ng
 test.sh.log
+aesdsocket
+server/aesdsocket
+server/valgrind-out.txt
 writer
