@@ -1,10 +1,12 @@
 .DEFAULT_GOAL := all
 
 CROSS_COMPILE ?=
-CC := $(CROSS_COMPILE)gcc
-INCLUDE_DIRS := include
-CFLAGS := -std=c99 -Wall -Wextra -pedantic -Wunused -Wconversion -I $(INCLUDE_DIRS)
-LDFLAGS := -lrt -pthread
+CC ?= $(CROSS_COMPILE)gcc
+CFLAGS ?= -std=c99 -Wall -Wextra -pedantic -Wunused -Wconversion
+LDFLAGS ?= -lrt -pthread
+
+INCLUDE_FLAGS :=
+INCLUDE_FLAGS += -I include/
 
 SRC_FILES :=
 SRC_FILES += src/aesd_server.c
@@ -15,7 +17,7 @@ SRC_FILES += src/aesdsocket.c
 all: aesdsocket
 
 aesdsocket: $(SRC_FILES)
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+	$(CC) $(CFLAGS) $(INCLUDE_FLAGS) -o $@ $^ $(LDFLAGS)
 
 .PHONY: clean
 clean:
