@@ -10,8 +10,6 @@ else
 endif
 
 EXTRA_CFLAGS += $(DEBFLAGS)
-EXTRA_CFLAGS += -Wall -Wextra -Werror
-EXTRA_CFLAGS += -Wno-declaration-after-statement -Wno-unused-parameter
 
 ifneq ($(KERNELRELEASE),)
 # call from kernel build system
