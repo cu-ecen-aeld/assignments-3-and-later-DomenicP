@@ -68,10 +68,21 @@
 #define BACKLOG 5U
 /** @brief  Buffer size for clients. */
 #define BUF_SIZE 256U
-/** @brief  Output file where incoming data will be written. */
-#define OUTPUT_FILE "/var/tmp/aesdsocketdata"
 /** @brief  Port for the server to listen on. */
 #define PORT "9000"
+
+// This can be overriden via build flag
+#ifndef USE_AESD_CHAR_DEVICE
+#define USE_AESD_CHAR_DEVICE 1
+#endif
+
+#ifdef USE_AESD_CHAR_DEVICE
+/** @brief  Send output data to a device. */
+#define OUTPUT_FILE "/dev/aesdchar"
+#else
+/** @brief  Output file where incoming data will be written. */
+#define OUTPUT_FILE "/var/tmp/aesdsocketdata"
+#endif
 
 /******************************************************************************
  * Static global variables
@@ -128,23 +139,19 @@ int main(int argc, const char **argv)
 {
     // Check for daemon mode
     bool daemon = (argc >= 2) && (strcmp("-d", argv[1]) == 0);
-    if (daemon)
-    {
+    if (daemon) {
         // Try to fork the process
         pid_t pid = fork();
-        if (-1 == pid)
-        {
+        if (-1 == pid) {
             perror("fork");
             return -1;
         }
         // Check for exit if parent process
-        if (pid != 0)
-        {
+        if (pid != 0) {
             printf("server daemon started with PID=%d\n", pid);
             exit(0);
         }
-        if (-1 == daemonize())
-        {
+        if (-1 == daemonize()) {
             fprintf(stderr, "could not daemonize process");
             return -1;
         }
@@ -159,8 +166,7 @@ int main(int argc, const char **argv)
 
     // Open the output file
     int output_fd = open(OUTPUT_FILE, O_RDWR | O_CREAT | O_TRUNC, 0644);
-    if (-1 == output_fd)
-    {
+    if (-1 == output_fd) {
         perror("open output file");
         return -1;
     }
@@ -168,13 +174,13 @@ int main(int argc, const char **argv)
     int result = run_server(output_fd);
 
     // Close and delete the output file
-    if (-1 == close(output_fd))
-    {
+    if (-1 == close(output_fd)) {
         perror("close output file");
     }
-    if (-1 == unlink(OUTPUT_FILE))
-    {
-        perror("unlink output file");
+    if (!USE_AESD_CHAR_DEVICE) {
+        if (-1 == unlink(OUTPUT_FILE)) {
+            perror("unlink output file");
+        }
     }
 
     return result;
@@ -187,31 +193,26 @@ int main(int argc, const char **argv)
 static int daemonize(void)
 {
     // Create a session and assign this process as the session leader
-    if (-1 == setsid())
-    {
+    if (-1 == setsid()) {
         perror("setsid");
         return -1;
     }
     // Change directories to the filesystem root
-    if (-1 == chdir("/"))
-    {
+    if (-1 == chdir("/")) {
         perror("chdir");
         return -1;
     }
     // Redirect stdio to /dev/null
     int dev_null = open("/dev/null", O_RDWR);
-    if (-1 == dup2(dev_null, STDIN_FILENO))
-    {
+    if (-1 == dup2(dev_null, STDIN_FILENO)) {
         perror("dup2: stdin > /dev/null");
         return -1;
     }
-    if (-1 == dup2(dev_null, STDOUT_FILENO))
-    {
+    if (-1 == dup2(dev_null, STDOUT_FILENO)) {
         perror("dup2: stdout > /dev/null");
         return -1;
     }
-    if (-1 == dup2(dev_null, STDERR_FILENO))
-    {
+    if (-1 == dup2(dev_null, STDERR_FILENO)) {
         perror("dup2: stderr > /dev/null");
         return -1;
     }
@@ -227,8 +228,7 @@ static void handle(int sig)
         },
         NULL
     );
-    if (-1 == result)
-    {
+    if (-1 == result) {
         perror("sigaction");
         exit(-1);
     }
@@ -238,24 +238,20 @@ static int run_server(int output_fd)
 {
     // Try to bind the server address and port
     struct aesd_server srv = {0};
-    aesd_server_init(&srv, BUF_SIZE, output_fd);
-    if (!aesd_server_bind(&srv, PORT))
-    {
+    aesd_server_init(&srv, BUF_SIZE, output_fd, !USE_AESD_CHAR_DEVICE);
+    if (!aesd_server_bind(&srv, PORT)) {
         fprintf(stderr, "server could not bind to port " PORT "\n");
         return -1;
     }
 
     // Start listening for connections
-    if (!aesd_server_listen(&srv, BACKLOG))
-    {
+    if (!aesd_server_listen(&srv, BACKLOG)) {
         fprintf(stderr, "server could not start listening\n");
         return -1;
     }
 
-    while (g_running)
-    {
-        if (!aesd_server_accept_client(&srv))
-        {
+    while (g_running) {
+        if (!aesd_server_accept_client(&srv)) {
             fprintf(stderr, "client not accepted\n");
             continue;
         }

@@ -45,10 +45,13 @@ struct aesd_server
  * @brief   Initialize the server.
  *
  * @param   self
- * @param   buf_size    Buffer size in bytes for client workers.
- * @param   output_fd   Output file descriptor.
+ * @param   buf_size        Buffer size in bytes for client workers.
+ * @param   output_fd       Output file descriptor.
+ * @param   enable_timer    Set to `true` to enable the timestamp timer.
  */
-void aesd_server_init(struct aesd_server *self, size_t buf_size, int output_fd);
+void aesd_server_init(
+    struct aesd_server *self, size_t buf_size, int output_fd, bool enable_timer
+);
 
 /**
  * @brief   Create a socket fd and bind it to an address for listening.

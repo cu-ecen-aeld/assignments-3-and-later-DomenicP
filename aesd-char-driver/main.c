@@ -52,9 +52,34 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count, loff_t *f_p
 {
     ssize_t result = 0;
     PDEBUG("read %zu bytes with offset %lld", count, *f_pos);
-    /**
-     * TODO: handle read
-     */
+
+    struct aesd_dev *dev = filp->private_data;
+
+    if (mutex_lock_interruptible(&dev->entry_lock)) {
+        return -ERESTARTSYS;
+    }
+
+    // Search the buffer for the entry corresponding to the file position
+    size_t offset = 0;
+    struct aesd_buffer_entry *entry
+        = aesd_circular_buffer_find_entry_offset_for_fpos(&dev->buf, *f_pos, &offset);
+
+    if (entry == NULL) {
+        // Offset is past the end of data (EOF)
+        result = 0;
+        goto out;
+    }
+
+    size_t read_count = entry->size - offset;
+    if (copy_to_user(buf, entry->buffptr + offset, read_count)) {
+        result = -EFAULT;
+        goto out;
+    }
+
+    *f_pos += read_count;
+
+out:
+    mutex_unlock(&dev->buf_lock);
     return result;
 }
 
@@ -120,7 +145,6 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count, loff
 
 out:
     mutex_unlock(&dev->entry_lock);
-
     return result;
 }
 
@@ -171,11 +195,16 @@ void aesd_cleanup_module(void)
 {
     dev_t devno = MKDEV(g_aesd_major, g_aesd_minor);
 
-    cdev_del(&g_aesd_device.cdev);
+    // Free any remaining buffer entries
+    int i;
+    struct aesd_buffer_entry *entry = NULL;
+    AESD_CIRCULAR_BUFFER_FOREACH(entry, &g_aesd_device.buf, i) {
+        if (entry->buffptr != NULL) {
+            kfree(entry->buffptr);
+        }
+    }
 
-    /**
-     * TODO: cleanup AESD specific portions here as necessary
-     */
+    cdev_del(&g_aesd_device.cdev);
 
     unregister_chrdev_region(devno, 1);
 }
