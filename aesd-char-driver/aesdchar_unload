@@ -1,7 +1,7 @@
 #!/bin/sh
 module=aesdchar
 device=aesdchar
-cd `dirname $0`
+cd "$(dirname "$0")" || exit 1
 # invoke rmmod with all arguments we got
 rmmod $module || exit 1
 

@@ -4,21 +4,23 @@
 
 # Add your debugging flag (or not) to CFLAGS
 ifeq ($(DEBUG),y)
-  DEBFLAGS = -O -g -DSCULL_DEBUG # "-O" is needed to expand inlines
+	DEBFLAGS = -O -g -DAESDCHAR # "-O" is needed to expand inlines
 else
-  DEBFLAGS = -O2
+	DEBFLAGS = -O2
 endif
 
 EXTRA_CFLAGS += $(DEBFLAGS)
+EXTRA_CFLAGS += -Wall -Wextra -Werror
+EXTRA_CFLAGS += -Wno-declaration-after-statement -Wno-unused-parameter
 
 ifneq ($(KERNELRELEASE),)
 # call from kernel build system
-obj-m	:= aesdchar.o
+obj-m := aesdchar.o
 aesdchar-y := aesd-circular-buffer.o main.o
 else
 
 KERNELDIR ?= /lib/modules/$(shell uname -r)/build
-PWD       := $(shell pwd)
+PWD := $(shell pwd)
 
 modules:
 	$(MAKE) -C $(KERNELDIR) M=$(PWD) modules
@@ -26,5 +28,17 @@ modules:
 endif
 
 clean:
-	rm -rf *.o *~ core .depend .*.cmd *.ko *.mod.c .tmp_versions
+	rm -rf \
+		.*.cmd \
+		.depend \
+		.tmp_versions \
+		*.d \
+		*.ko \
+		*.mod \
+		*.mod.c \
+		*.o \
+		*.order \
+		*.symvers \
+		*~ \
+		core
 
