@@ -1,5 +1,14 @@
 #!/bin/sh
 
+### BEGIN INIT INFO
+# Provides:             aesdsocket
+# Required-Start:       $remote_fs $syslog $network aesdchar
+# Required-Stop:        $remote_fs $syslog $network aesdchar
+# Default-Start:
+# Default-Stop:
+# Short-Description:    aesdsocket server
+### END INIT INFO
+
 case "$1" in
     start)
         echo "Starting aesdsocket"
