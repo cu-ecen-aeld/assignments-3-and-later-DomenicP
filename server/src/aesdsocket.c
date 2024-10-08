@@ -35,7 +35,7 @@
  *   - Synchronize writes to /var/tmp/aesdsocketdata using a mutex (not relying on file system
  *     synchronization).
  *   - Threads should exit when the connection is closed by the client or on send/receive errors.
- *   - The program should gracefully exit when SIGTERM / SIGNINT is received
+ *   - The program should gracefully exit when SIGTERM / SIGINT is received
  *     - The program should request each thread exit and wait for completion.
  *   - Manage the threads with a singly linked list.
  * - Append a timestamp in the form "timestamp:<time>" where <time> is specified by RFC 2822
@@ -60,10 +60,6 @@
 
 #include "aesdsocket/aesd_server.h"
 
-/******************************************************************************
- * Macros and constants
- *****************************************************************************/
-
 /** @brief  Incoming connection backlog length. */
 #define BACKLOG 5U
 /** @brief  Buffer size for clients. */
@@ -76,7 +72,7 @@
 #define USE_AESD_CHAR_DEVICE 1
 #endif
 
-#ifdef USE_AESD_CHAR_DEVICE
+#if USE_AESD_CHAR_DEVICE
 /** @brief  Send output data to a device. */
 #define OUTPUT_FILE "/dev/aesdchar"
 #else
@@ -84,16 +80,8 @@
 #define OUTPUT_FILE "/var/tmp/aesdsocketdata"
 #endif
 
-/******************************************************************************
- * Static global variables
- *****************************************************************************/
-
-/** @brief  Global flag indicating if the sever should keep running or shutdown. */
-static bool g_running = true;
-
-/******************************************************************************
- * Static function declarations
- *****************************************************************************/
+/** @brief  AESD socket server instance. */
+static struct aesd_server g_srv = {0};
 
 /**
  * @brief   Setup the process to run as a daemon.
@@ -102,25 +90,34 @@ static bool g_running = true;
  *
  * @return  0 on success, -1 on error.
  */
-static int daemonize(void);
-
-/**
- * @brief   Register a signal with the program-specific signal handler.
- *
- * Exits the program with a failure status of -1 if the system call fails.
- *
- * @param   signal  The signal to be handled.
- */
-static void handle(int signal);
-
-/**
- * @brief   Run the server.
- *
- * @param   output_fd   Output data file to be used by the server.
- *
- * @return  0 on success, -1 on failure.
- */
-static int run_server(int output_fd);
+static int daemonize(void)
+{
+    // Create a session and assign this process as the session leader
+    if (-1 == setsid()) {
+        perror("setsid");
+        return -1;
+    }
+    // Change directories to the filesystem root
+    if (-1 == chdir("/")) {
+        perror("chdir");
+        return -1;
+    }
+    // Redirect stdio to /dev/null
+    int dev_null = open("/dev/null", O_RDWR);
+    if (-1 == dup2(dev_null, STDIN_FILENO)) {
+        perror("dup2: stdin > /dev/null");
+        return -1;
+    }
+    if (-1 == dup2(dev_null, STDOUT_FILENO)) {
+        perror("dup2: stdout > /dev/null");
+        return -1;
+    }
+    if (-1 == dup2(dev_null, STDERR_FILENO)) {
+        perror("dup2: stderr > /dev/null");
+        return -1;
+    }
+    return 0;
+}
 
 /**
  * @brief   Program-specific signal handler.
@@ -129,11 +126,38 @@ static int run_server(int output_fd);
  *
  * @param   signal  The signal to be handled.
  */
-static void signal_handler(int signal);
+static void signal_handler(int sig)
+{
+    syslog(LOG_INFO, "caught signal, exiting");
+    if (sig == SIGINT || sig == SIGTERM) {
+        g_srv.running = false;
+    } else {
+        fprintf(stderr, "received unhandled signal %d\n", sig);
+        exit(-1);
+    }
+}
 
-/******************************************************************************
- * Extern function definitions
- *****************************************************************************/
+/**
+ * @brief   Register a signal with the program-specific signal handler.
+ *
+ * Exits the program with a failure status of -1 if the system call fails.
+ *
+ * @param   sig     The signal to be handled.
+ */
+static void handle(int sig)
+{
+    int result = sigaction(
+        sig,
+        &(struct sigaction) {
+            .sa_handler = signal_handler,
+        },
+        NULL
+    );
+    if (-1 == result) {
+        perror("sigaction");
+        exit(-1);
+    }
+}
 
 int main(int argc, const char **argv)
 {
@@ -164,118 +188,16 @@ int main(int argc, const char **argv)
     handle(SIGINT);
     handle(SIGTERM);
 
-    // Open the output file
-    int output_fd = open(OUTPUT_FILE, O_RDWR | O_CREAT | O_TRUNC, 0644);
-    if (-1 == output_fd) {
-        perror("open output file");
-        return -1;
-    }
-
-    int result = run_server(output_fd);
-
-    // Close and delete the output file
-    if (-1 == close(output_fd)) {
-        perror("close output file");
-    }
-    if (!USE_AESD_CHAR_DEVICE) {
-        if (-1 == unlink(OUTPUT_FILE)) {
-            perror("unlink output file");
-        }
-    }
-
-    return result;
-}
-
-/******************************************************************************
- * Static function definitions
- *****************************************************************************/
-
-static int daemonize(void)
-{
-    // Create a session and assign this process as the session leader
-    if (-1 == setsid()) {
-        perror("setsid");
-        return -1;
-    }
-    // Change directories to the filesystem root
-    if (-1 == chdir("/")) {
-        perror("chdir");
-        return -1;
-    }
-    // Redirect stdio to /dev/null
-    int dev_null = open("/dev/null", O_RDWR);
-    if (-1 == dup2(dev_null, STDIN_FILENO)) {
-        perror("dup2: stdin > /dev/null");
-        return -1;
-    }
-    if (-1 == dup2(dev_null, STDOUT_FILENO)) {
-        perror("dup2: stdout > /dev/null");
-        return -1;
-    }
-    if (-1 == dup2(dev_null, STDERR_FILENO)) {
-        perror("dup2: stderr > /dev/null");
-        return -1;
-    }
-    return 0;
-}
-
-static void handle(int sig)
-{
-    int result = sigaction(
-        sig,
-        &(struct sigaction) {
-            .sa_handler = signal_handler,
-        },
-        NULL
+    syslog(
+        LOG_INFO,
+        "starting server: daemon=%d, output_file='%s', char_device=%d, port=%s",
+        daemon,
+        OUTPUT_FILE,
+        USE_AESD_CHAR_DEVICE,
+        PORT
     );
-    if (-1 == result) {
-        perror("sigaction");
-        exit(-1);
-    }
-}
-
-static int run_server(int output_fd)
-{
-    // Try to bind the server address and port
-    struct aesd_server srv = {0};
-    aesd_server_init(&srv, BUF_SIZE, output_fd, !USE_AESD_CHAR_DEVICE);
-    if (!aesd_server_bind(&srv, PORT)) {
-        fprintf(stderr, "server could not bind to port " PORT "\n");
-        return -1;
-    }
-
-    // Start listening for connections
-    if (!aesd_server_listen(&srv, BACKLOG)) {
-        fprintf(stderr, "server could not start listening\n");
-        return -1;
-    }
-
-    while (g_running) {
-        if (!aesd_server_accept_client(&srv)) {
-            fprintf(stderr, "client not accepted\n");
-            continue;
-        }
-        aesd_server_check_workers(&srv);
-    }
-
-    printf("shutting down\n");
-
-    // Shutdown the server
-    aesd_server_shutdown(&srv);
-
-    return 0;
-}
-
-static void signal_handler(int sig)
-{
-    syslog(LOG_INFO, "caught signal, exiting");
-    if (sig == SIGINT || sig == SIGTERM)
-    {
-        g_running = false;
-    }
-    else
-    {
-        fprintf(stderr, "received unhandled signal %d\n", sig);
-        exit(-1);
-    }
+    aesd_server_init(&g_srv, BUF_SIZE, OUTPUT_FILE, USE_AESD_CHAR_DEVICE);
+    int result = aesd_server_run(&g_srv, PORT, BACKLOG);
+    syslog(LOG_INFO, "server exiting with code %d", result);
+    return result;
 }

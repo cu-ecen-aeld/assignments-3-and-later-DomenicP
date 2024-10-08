@@ -2,30 +2,34 @@
 #define AESDSOCKET__AESD_WORKER_H_
 
 #include <arpa/inet.h>
+#include <errno.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 
+#include "aesdsocket/queue.h"
+
 /** @brief  AESD server worker thread. */
 struct aesd_worker
 {
-    /** @brief  Working buffer for client IO. */
-    char *buf;
-    /** @brief  Size of the workingbuffer in bytes. */
-    size_t buf_size;
     /** @brief  Address information for the client. */
     struct sockaddr_in client_addr;
     /** @brief  Socket fd for the client. */
     int client_fd;
-    /** Thread should set this true before exiting. */
-    bool exited;
-    /** @brief  Output file descriptor. */
-    int output_fd;
-    /** @brief  Mutex for synchronizing access to the output file. */
-    pthread_mutex_t *output_fd_lock;
+    /** @brief Thread should set this to `true` before exiting. */
+    atomic_bool exited;
     /** @brief  Parent thread can set this to true to request shutdown. */
-    bool shutdown;
+    atomic_bool shutdown;
+    /** @brief  Working buffer for client IO. */
+    char *buf_;
+    /** @brief  Size of the working buffer in bytes. */
+    size_t buf_size_;
+    /** @brief  Output file descriptor. */
+    int output_fd_;
+    /** @brief  Mutex for synchronizing access to the output file. */
+    pthread_mutex_t *output_fd_lock_;
 };
 
 /**
@@ -48,7 +52,7 @@ struct aesd_worker *aesd_worker_new(
  */
 static inline void aesd_worker_delete(struct aesd_worker *self)
 {
-    free(self->buf);
+    free(self->buf_);
     free(self);
 }
 
@@ -60,5 +64,77 @@ static inline void aesd_worker_delete(struct aesd_worker *self)
  * @return  `NULL`.
  */
 void *aesd_worker_main(void *arg);
+
+/** @brief  List entry for an AESD server worker thread. */
+struct aesd_worker_entry {
+    /** @brief  Thread ID. */
+    pthread_t tid;
+    /** @brief  Thread data. */
+    struct aesd_worker *worker;
+    /** @brief  Linked-list pointer. */
+    SLIST_ENTRY(aesd_worker_entry) entries;
+};
+
+/** @brief  Singly-linked list for AESD server worker threads. */
+SLIST_HEAD(aesd_worker_slist, aesd_worker_entry);
+
+/**
+ * @brief   Allocate a new worker list entry.
+ *
+ * @param   worker  Worker pointer to take ownership of.
+ *
+ * @return  Pointer to the new entry if successful, `NULL` on failure.
+ */
+static inline struct aesd_worker_entry *aesd_worker_entry_new(struct aesd_worker *worker)
+{
+    struct aesd_worker_entry *self
+        = (struct aesd_worker_entry *)malloc(sizeof(struct aesd_worker_entry));
+    if (self != NULL) {
+        self->worker = worker;
+    }
+    return self;
+}
+
+/**
+ * @brief   Free memory for a worker list entry.
+ *
+ * @param   self
+ */
+static inline void aesd_worker_entry_delete(struct aesd_worker_entry *self)
+{
+    aesd_worker_delete(self->worker);
+    self->worker = NULL;
+    free(self);
+}
+
+/**
+ * @brief   Start a worker thread.
+ *
+ * @param   self
+ *
+ * @return  `true` if starting the thread was successful, `false` otherwise.
+ */
+static inline bool aesd_worker_entry_start(struct aesd_worker_entry *self)
+{
+    int error = pthread_create(&self->tid, NULL, aesd_worker_main, self->worker);
+    if (error) {
+        errno = error;
+        perror("pthread_create");
+        return false;
+    }
+    return true;
+}
+
+/**
+ * @brief   Thread join for a worker list entry.
+ *
+ * @param   self
+ */
+static inline void aesd_worker_entry_join(struct aesd_worker_entry *self)
+{
+    if (-1 == pthread_join(self->tid, NULL)) {
+        perror("pthread_join");
+    }
+}
 
 #endif  // AESDSOCKET__AESD_WORKER_H_

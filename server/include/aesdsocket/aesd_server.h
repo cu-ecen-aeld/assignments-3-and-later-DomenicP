@@ -7,28 +7,25 @@
 #define AESDSOCKET__AESD_SERVER_H_
 
 #include <arpa/inet.h>
-#include <pthread.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <time.h>
 
 #include "aesdsocket/aesd_worker.h"
-#include "aesdsocket/queue.h"
-
-struct aesd_worker_entry {
-    pthread_t tid;
-    struct aesd_worker *worker;
-    SLIST_ENTRY(aesd_worker_entry) entries;
-};
-
-SLIST_HEAD(aesd_worker_slist, aesd_worker_entry);
 
 /** @brief  AESD server application. */
 struct aesd_server
 {
+    /** @brief  Set this to false to shutdown the server. */
+    atomic_bool running;
     /** @brief  Buffer size to allocate for client workers. */
     size_t buf_size_;
+    /** @brief  If `true`, indicates the output file is a char device, not a plain file. */
+    bool char_dev_;
     /** @brief  Output file descriptor. */
     int output_fd_;
+    /** @brief  Path to the output file. */
+    const char *output_path_;
     /** @brief  Mutex for output file. */
     pthread_mutex_t output_fd_lock_;
     /** @brief  Port on which the server is listening. */
@@ -46,60 +43,22 @@ struct aesd_server
  *
  * @param   self
  * @param   buf_size        Buffer size in bytes for client workers.
- * @param   output_fd       Output file descriptor.
- * @param   enable_timer    Set to `true` to enable the timestamp timer.
+ * @param   output_path     Path to the output file.
+ * @param   char_dev        Output file is a character device, not a plain file.
  */
 void aesd_server_init(
-    struct aesd_server *self, size_t buf_size, int output_fd, bool enable_timer
+    struct aesd_server *self, size_t buf_size, const char *output_path, bool char_dev
 );
 
 /**
- * @brief   Create a socket fd and bind it to an address for listening.
- *
- * Exits the program with a failure status of -1 if the socket cannot be initialized.
+ * @brief   Run the server.
  *
  * @param   self
- * @param   port    The port that the server should listen on.
+ * @param   port        Port on which to listen.
+ * @param   backlog     Connection backlog depth.
  *
- * @return  true if the socket was bound, false otherwise.
+ * @return  0 on success, -1 on failure.
  */
-bool aesd_server_bind(struct aesd_server *self, const char *port);
-
-/**
- * @brief   Start listening for incoming connections.
- *
- * Exits the program with a failure status of -1 if the socket cannot be initialized.
- *
- * @param   self
- * @param   backlog     Connection backlog length.
- *
- * @return  true if successful, false otherwise.
- */
-bool aesd_server_listen(struct aesd_server *self, int backlog);
-
-/**
- * @brief   Block and wait to accept an incoming client.
- *
- * @param   self
- *
- * @return true if successful, false otherwise.
- */
-bool aesd_server_accept_client(struct aesd_server *self);
-
-/**
- * @brief   Check worker threads and cleanup resources.
- *
- * @param   self
- */
-void aesd_server_check_workers(struct aesd_server *self);
-
-/**
- * @brief   Close the listening server socket and stop worker threads.
- *
- * @param   self
- *
- * @return true if successful, false otherwise.
- */
-void aesd_server_shutdown(struct aesd_server *self);
+int aesd_server_run(struct aesd_server *self, const char *port, int backlog);
 
 #endif  // AESDSOCKET__AESD_SERVER_H_

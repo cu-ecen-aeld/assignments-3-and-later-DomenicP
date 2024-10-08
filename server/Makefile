@@ -2,7 +2,7 @@
 
 CROSS_COMPILE ?=
 CC ?= $(CROSS_COMPILE)gcc
-CFLAGS ?= -std=c99 -Wall -Wextra -pedantic -Wunused -Wconversion
+CFLAGS ?= -g -std=c11 -Wall -Wextra -pedantic -Wunused -Wconversion
 LDFLAGS ?= -lrt -pthread
 
 INCLUDE_FLAGS :=

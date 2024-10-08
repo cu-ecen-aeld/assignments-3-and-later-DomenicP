@@ -1,23 +1,22 @@
 #!/bin/sh
-
 ### BEGIN INIT INFO
-# Provides:             aesdchar
-# Required-Start:       $remote_fs $syslog
-# Required-Stop:        $remote_fs $syslog
-# Default-Start:
-# Default-Stop:
-# Short-Description:    AESD character driver
+# Provides: aesdchar
+# Required-Start: $remote_fs $syslog
+# Required-Stop: $remote_fs $syslog
+# Default-Start: 2 3 4 5
+# Default-Stop: 0 1 6
+# Short-Description: Load / unload AESD character device driver
 ### END INIT INFO
 
 case "$1" in
     start)
-        /usr/bin/aesdchar_load
+        /usr/sbin/aesdchar_load
         ;;
     stop)
-        /usr/bin/aesdchar_unload
+        /usr/sbin/aesdchar_unload
         ;;
     *)
-        echo "Usage: $0 { start | stop }"
+        echo "Usage: $0 {start|stop}"
         exit 1
 esac
 

@@ -5,25 +5,6 @@
 #include <unistd.h>
 
 /**
- * @brief   Close the client connection and log to syslog.
- *
- * @param   self
- */
-static void close_client(struct aesd_worker *self)
-{
-    if (self->client_fd >= 0) {
-        if (-1 == close(self->client_fd)) {
-            perror("client socket close");
-        }
-
-        // Log the client disconnection
-        char client_ip4_str[INET_ADDRSTRLEN];
-        inet_ntop(AF_INET, &self->client_addr.sin_addr, client_ip4_str, INET_ADDRSTRLEN);
-        syslog(LOG_INFO, "Closed connection from %s", client_ip4_str);
-    }
-}
-
-/**
  * @brief   Receive data from the client and append it to the output file.
  *
  * Continue receiving data until a newline character is reached.
@@ -35,48 +16,48 @@ static void close_client(struct aesd_worker *self)
 static bool receive_data(struct aesd_worker *self)
 {
     // START CRITICAL REGION: output_fd
-    pthread_mutex_lock(self->output_fd_lock);
+    pthread_mutex_lock(self->output_fd_lock_);
 
     // Loop until all data has been received
     bool done = false;
     bool error = false;
     while (!done && !self->shutdown) {
         // Reset the buffer
-        memset(self->buf, 0, self->buf_size);
+        memset(self->buf_, 0, self->buf_size_);
 
         // Receive the next data chunk
-        if (-1 == recv(self->client_fd, self->buf, self->buf_size, 0)) {
+        if (-1 == recv(self->client_fd, self->buf_, self->buf_size_, 0)) {
             perror("recv");
             error = true;
             break;
         }
 
         // Default to write the whole buffer
-        size_t n = self->buf_size;
+        size_t n = self->buf_size_;
 
         // Search for newline
-        char *pnewline = memchr(self->buf, '\n', self->buf_size);
+        char *pnewline = memchr(self->buf_, '\n', self->buf_size_);
         if (pnewline != NULL) {
             // Write only up to the newline and be done
             done = true;
-            n = (size_t)(pnewline - self->buf + 1);
+            n = (size_t)(pnewline - self->buf_ + 1);
         }
 
         // Seek to the end of the file
-        if (-1 == lseek(self->output_fd, 0, SEEK_END)) {
+        if (-1 == lseek(self->output_fd_, 0, SEEK_END)) {
             perror("lseek");
             error = true;
             break;
         }
         // Write to disk
-        if (-1 == write(self->output_fd, self->buf, n)) {
+        if (-1 == write(self->output_fd_, self->buf_, n)) {
             perror("write");
             error = true;
             break;
         }
     }
 
-    pthread_mutex_unlock(self->output_fd_lock);
+    pthread_mutex_unlock(self->output_fd_lock_);
     // END CRITICAL REGION: output_fd
 
     return !error && !self->shutdown;
@@ -96,10 +77,10 @@ static bool send_response(struct aesd_worker *self)
     bool result = false;
 
     // START CRITICAL REGION: output_fd
-    pthread_mutex_lock(self->output_fd_lock);
+    pthread_mutex_lock(self->output_fd_lock_);
 
     // Seek to the start of the file
-    if (-1 == lseek(self->output_fd, 0, SEEK_SET)) {
+    if (-1 == lseek(self->output_fd_, 0, SEEK_SET)) {
         perror("lseek");
         goto out;
     }
@@ -107,15 +88,15 @@ static bool send_response(struct aesd_worker *self)
     // Loop until the entire response has been sent
     bool done = false;
     while (!done && !self->shutdown) {
-        ssize_t n = read(self->output_fd, self->buf, self->buf_size);
+        ssize_t n = read(self->output_fd_, self->buf_, self->buf_size_);
         if (-1 == n) {
             perror("read");
             goto out;
         }
-        else if (self->buf[n - 1] == '\n') {
+        else if (self->buf_[n - 1] == '\n') {
             done = true;
         }
-        if (-1 == send(self->client_fd, self->buf, (size_t)n, 0)) {
+        if (-1 == send(self->client_fd, self->buf_, (size_t)n, 0)) {
             perror("send");
             goto out;
         }
@@ -124,10 +105,29 @@ static bool send_response(struct aesd_worker *self)
     result = !self->shutdown;
 
 out:
-    pthread_mutex_unlock(self->output_fd_lock);
+    pthread_mutex_unlock(self->output_fd_lock_);
     // END CRITICAL REGION: output_fd
 
     return result;
+}
+
+/**
+ * @brief   Close the client connection and log to syslog.
+ *
+ * @param   self
+ */
+static void close_client(struct aesd_worker *self)
+{
+    if (self->client_fd >= 0) {
+        if (-1 == close(self->client_fd)) {
+            perror("client socket close");
+        }
+
+        // Log the client disconnection
+        char client_ip4_str[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &self->client_addr.sin_addr, client_ip4_str, INET_ADDRSTRLEN);
+        syslog(LOG_INFO, "Closed connection from %s", client_ip4_str);
+    }
 }
 
 struct aesd_worker *aesd_worker_new(
@@ -141,8 +141,8 @@ struct aesd_worker *aesd_worker_new(
     }
 
     // Allocate buf
-    self->buf = (char *)malloc(buf_size);
-    if (self->buf == NULL) {
+    self->buf_ = (char *)malloc(buf_size);
+    if (self->buf_ == NULL) {
         perror("malloc aesd_worker buf");
         free(self);
         self = NULL;
@@ -150,12 +150,12 @@ struct aesd_worker *aesd_worker_new(
     }
 
     // Initialize remaining members
-    self->buf_size = buf_size;
+    self->buf_size_ = buf_size;
     memset(&self->client_addr, 0, sizeof(self->client_addr));
     self->client_fd = -1;
     self->exited = false;
-    self->output_fd = output_fd;
-    self->output_fd_lock = output_fd_lock;
+    self->output_fd_ = output_fd;
+    self->output_fd_lock_ = output_fd_lock;
     self->shutdown = false;
 
     return self;
