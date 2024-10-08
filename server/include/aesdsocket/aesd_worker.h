@@ -26,6 +26,8 @@ struct aesd_worker
     char *buf_;
     /** @brief  Size of the working buffer in bytes. */
     size_t buf_size_;
+    /** @brief  If `true`, indicates the output file is a char device, not a plain file. */
+    bool char_dev_;
     /** @brief  Output file descriptor. */
     int output_fd_;
     /** @brief  Mutex for synchronizing access to the output file. */
@@ -36,13 +38,14 @@ struct aesd_worker
  * @brief   Allocate a new AESD worker.
  *
  * @param   buf_size        Size of the worker buffer in bytes.
+ * @param   char_dev        Output file is a character device, not a plain file.
  * @param   output_fd       Output file descriptor.
  * @param   output_fd_lock  Mutex for synchronizing acces to the output file.
  *
  * @return  Pointer to the allocated worker if successful, NULL on failure.
  */
 struct aesd_worker *aesd_worker_new(
-    size_t buf_size, int output_fd, pthread_mutex_t *output_fd_lock
+    size_t buf_size, bool char_dev, int output_fd, pthread_mutex_t *output_fd_lock
 );
 
 /**

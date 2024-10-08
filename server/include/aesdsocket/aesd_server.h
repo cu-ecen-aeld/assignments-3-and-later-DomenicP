@@ -43,11 +43,11 @@ struct aesd_server
  *
  * @param   self
  * @param   buf_size        Buffer size in bytes for client workers.
- * @param   output_path     Path to the output file.
  * @param   char_dev        Output file is a character device, not a plain file.
+ * @param   output_path     Path to the output file.
  */
 void aesd_server_init(
-    struct aesd_server *self, size_t buf_size, const char *output_path, bool char_dev
+    struct aesd_server *self, size_t buf_size, bool char_dev, const char *output_path
 );
 
 /**

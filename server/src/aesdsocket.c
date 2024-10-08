@@ -196,7 +196,7 @@ int main(int argc, const char **argv)
         USE_AESD_CHAR_DEVICE,
         PORT
     );
-    aesd_server_init(&g_srv, BUF_SIZE, OUTPUT_FILE, USE_AESD_CHAR_DEVICE);
+    aesd_server_init(&g_srv, BUF_SIZE, USE_AESD_CHAR_DEVICE, OUTPUT_FILE);
     int result = aesd_server_run(&g_srv, PORT, BACKLOG);
     syslog(LOG_INFO, "server exiting with code %d", result);
     return result;

@@ -119,6 +119,7 @@ static bool accept_client(struct aesd_server *self)
     // Open the shared file handle if it isn't open yet
     pthread_mutex_lock(&self->output_fd_lock_);
     if (self->output_fd_ == -1) {
+        syslog(LOG_INFO, "opening %s", self->output_path_);
         self->output_fd_ = open(self->output_path_, O_RDWR | O_CREAT | O_TRUNC, 0644);
     }
     int output_fd = self->output_fd_;
@@ -130,7 +131,7 @@ static bool accept_client(struct aesd_server *self)
 
     // Create a new worker
     struct aesd_worker *worker = aesd_worker_new(
-        self->buf_size_, self->output_fd_, &self->output_fd_lock_
+        self->buf_size_, self->char_dev_, self->output_fd_, &self->output_fd_lock_
     );
     if (worker == NULL) {
         fprintf(stderr, "could not allocate worker\n");
@@ -189,6 +190,13 @@ static void check_workers(struct aesd_server *self)
             entry = NULL;
         }
     }
+    if (SLIST_EMPTY(&self->workers_)) {
+        pthread_mutex_lock(&self->output_fd_);
+        syslog(LOG_INFO, "closing %s", self->output_path_);
+        close(self->output_fd_);
+        self->output_fd_ = -1;
+        pthread_mutex_unlock(&self->output_fd_);
+    }
 }
 
 /**
@@ -224,8 +232,10 @@ static void srv_shutdown(struct aesd_server *self)
     }
 
     // Close the output file
-    if (-1 == close(self->output_fd_)) {
-        perror("close output file");
+    if (self->output_fd_ != -1) {
+        if (-1 == close(self->output_fd_)) {
+            perror("close output file");
+        }
     }
     // Delete the output if not a device
     if (!self->char_dev_) {
@@ -254,14 +264,14 @@ static void alarm_handler(int sig, siginfo_t *si, void *uc)
         // Write the string to the output file
         struct aesd_server *self = si->si_value.sival_ptr;
         pthread_mutex_lock(&self->output_fd_lock_);
-        // Seek to the end of the file
-        if (-1 == lseek(self->output_fd_, 0, SEEK_END))
-        {
-            perror("timer lseek");
+        if (!self->char_dev_) {
+            // Seek to the end of the file
+            if (-1 == lseek(self->output_fd_, 0, SEEK_END)) {
+                perror("timer lseek");
+            }
         }
         // Write to disk
-        else if (-1 == write(self->output_fd_, timestamp_str, timestamp_str_len))
-        {
+        else if (-1 == write(self->output_fd_, timestamp_str, timestamp_str_len)) {
             perror("timer write");
         }
         pthread_mutex_unlock(&self->output_fd_lock_);
@@ -320,7 +330,7 @@ static void start_timestamp_timer(struct aesd_server *self)
 }
 
 void aesd_server_init(
-    struct aesd_server *self, size_t buf_size, const char *output_path, bool char_dev
+    struct aesd_server *self, size_t buf_size, bool char_dev, const char *output_path
 ) {
     self->running = false;
     self->buf_size_ = buf_size;

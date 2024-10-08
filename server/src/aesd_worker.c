@@ -44,10 +44,12 @@ static bool receive_data(struct aesd_worker *self)
         }
 
         // Seek to the end of the file
-        if (-1 == lseek(self->output_fd_, 0, SEEK_END)) {
-            perror("lseek");
-            error = true;
-            break;
+        if (!self->char_dev_) {
+            if (-1 == lseek(self->output_fd_, 0, SEEK_END)) {
+                perror("lseek");
+                error = true;
+                break;
+            }
         }
         // Write to disk
         if (-1 == write(self->output_fd_, self->buf_, n)) {
@@ -79,10 +81,12 @@ static bool send_response(struct aesd_worker *self)
     // START CRITICAL REGION: output_fd
     pthread_mutex_lock(self->output_fd_lock_);
 
-    // Seek to the start of the file
-    if (-1 == lseek(self->output_fd_, 0, SEEK_SET)) {
-        perror("lseek");
-        goto out;
+    if (!self->char_dev_) {
+        // Seek to the start of the file
+        if (-1 == lseek(self->output_fd_, 0, SEEK_SET)) {
+            perror("lseek");
+            goto out;
+        }
     }
 
     // Loop until the entire response has been sent
@@ -131,7 +135,7 @@ static void close_client(struct aesd_worker *self)
 }
 
 struct aesd_worker *aesd_worker_new(
-    size_t buf_size, int output_fd, pthread_mutex_t *output_fd_lock
+    size_t buf_size, bool char_dev, int output_fd, pthread_mutex_t *output_fd_lock
 ) {
     // Allocate self
     struct aesd_worker *self = (struct aesd_worker *)malloc(sizeof(struct aesd_worker));
@@ -154,9 +158,10 @@ struct aesd_worker *aesd_worker_new(
     memset(&self->client_addr, 0, sizeof(self->client_addr));
     self->client_fd = -1;
     self->exited = false;
+    self->shutdown = false;
+    self->char_dev_ = char_dev;
     self->output_fd_ = output_fd;
     self->output_fd_lock_ = output_fd_lock;
-    self->shutdown = false;
 
     return self;
 }
