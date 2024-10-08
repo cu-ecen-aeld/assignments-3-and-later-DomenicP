@@ -8,3 +8,6 @@ linux_source_cdt
 *.mod
 build
 *.d
+oe-logs
+oe-workdir
+.tmp_*

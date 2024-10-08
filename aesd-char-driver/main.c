@@ -55,9 +55,12 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count, loff_t *f_p
 
     struct aesd_dev *dev = filp->private_data;
 
-    if (mutex_lock_interruptible(&dev->entry_lock)) {
+    PDEBUG("read locking buf");
+    if (mutex_lock_interruptible(&dev->buf_lock)) {
+        PDEBUG("read lock interrupted");
         return -ERESTARTSYS;
     }
+    PDEBUG("read buf locked");
 
     // Search the buffer for the entry corresponding to the file position
     size_t offset = 0;
@@ -66,21 +69,29 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count, loff_t *f_p
 
     if (entry == NULL) {
         // Offset is past the end of data (EOF)
+        PDEBUG("read end of file");
         result = 0;
         goto out;
     }
 
     size_t read_count = entry->size - offset;
+    if (read_count > count) {
+        read_count = count;
+    }
+    PDEBUG("read copying %zu bytes to user buf", read_count);
     if (copy_to_user(buf, entry->buffptr + offset, read_count)) {
+        PDEBUG("read error copying to user buffer");
         result = -EFAULT;
         goto out;
     }
 
     result = read_count;
     *f_pos += read_count;
+    PDEBUG("read returning count=%zu offset=%lld", read_count, *f_pos);
 
 out:
     mutex_unlock(&dev->buf_lock);
+    PDEBUG("read unlock buf");
     return result;
 }
 
@@ -91,13 +102,17 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count, loff
 
     struct aesd_dev *dev = filp->private_data;
 
+    PDEBUG("write locking entry");
     if (mutex_lock_interruptible(&dev->entry_lock)) {
+        PDEBUG("write lock interrupted");
         return -ERESTARTSYS;
     }
+    PDEBUG("write entry locked");
 
     // Check for previous entry
     if (dev->entry.buffptr == NULL) {
         // Allocate a fresh buffer since there's no data from a previous write
+        PDEBUG("write new entry");
         dev->entry.buffptr = kzalloc(count, GFP_KERNEL);
         if (dev->entry.buffptr == NULL) {
             result = -ENOMEM;
@@ -109,6 +124,7 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count, loff
         }
     } else {
         // Allocate a larger buffer to append to the previous write
+        PDEBUG("write append entry");
         char *new_buf = kzalloc(dev->entry.size + count, GFP_KERNEL);
         if (new_buf == NULL) {
             result = -ENOMEM;
@@ -128,14 +144,19 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count, loff
     result = count;
 
     // Check for newline to mark the end of the entry
+    PDEBUG("write locking buf");
     if (mutex_lock_interruptible(&dev->buf_lock)) {
+        PDEBUG("write lock interrupted");
         result = -EINTR;
         goto out;
     }
+    PDEBUG("write buf locked");
     if (dev->entry.buffptr[dev->entry.size - 1] == '\n') {
+        PDEBUG("write push entry");
         char *old_data = aesd_circular_buffer_add_entry(&dev->buf, &dev->entry);
         // Clean up old entry data dropped from the buffer
         if (old_data != NULL) {
+            PDEBUG("write drop entry");
             kfree(old_data);
         }
         // Reset the entry for the next write
@@ -143,9 +164,11 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count, loff
         dev->entry.size = 0;
     }
     mutex_unlock(&dev->buf_lock);
+    PDEBUG("write buf unlocked");
 
 out:
     mutex_unlock(&dev->entry_lock);
+    PDEBUG("write entry unlocked");
     return result;
 }
 
