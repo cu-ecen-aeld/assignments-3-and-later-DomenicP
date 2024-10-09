@@ -101,7 +101,7 @@ static bool send_response(struct aesd_worker *self)
             perror("worker read");
             goto out_close_file;
         }
-        else if (self->buf_[n - 1] == '\n') {
+        else if (0 == n) {
             done = true;
         }
         if (-1 == send(self->client_fd, self->buf_, (size_t)n, 0)) {
