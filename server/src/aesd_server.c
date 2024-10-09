@@ -103,7 +103,7 @@ static bool srv_listen(struct aesd_server *self, int backlog)
         return false;
     }
     printf("server listening on port %s\n", self->port_);
-    syslog(LOG_INFO, "server listening on port %s", self->port_);
+    syslog(LOG_NOTICE, "server listening on port %s", self->port_);
     return true;
 }
 
@@ -116,22 +116,9 @@ static bool srv_listen(struct aesd_server *self, int backlog)
  */
 static bool accept_client(struct aesd_server *self)
 {
-    // Open the shared file handle if it isn't open yet
-    pthread_mutex_lock(&self->output_fd_lock_);
-    if (self->output_fd_ == -1) {
-        syslog(LOG_INFO, "opening %s", self->output_path_);
-        self->output_fd_ = open(self->output_path_, O_RDWR | O_CREAT | O_TRUNC, 0644);
-    }
-    int output_fd = self->output_fd_;
-    pthread_mutex_unlock(&self->output_fd_lock_);
-    if (-1 == output_fd) {
-        perror("open output file");
-        return false;
-    }
-
     // Create a new worker
     struct aesd_worker *worker = aesd_worker_new(
-        self->buf_size_, self->char_dev_, self->output_fd_, &self->output_fd_lock_
+        self->buf_size_, self->char_dev_, self->output_path_, &self->output_lock_
     );
     if (worker == NULL) {
         fprintf(stderr, "could not allocate worker\n");
@@ -151,7 +138,7 @@ static bool accept_client(struct aesd_server *self)
     // Log the client connection
     char client_ip4_str[INET_ADDRSTRLEN];
     inet_ntop(AF_INET, &worker->client_addr.sin_addr, client_ip4_str, sizeof(client_ip4_str));
-    syslog(LOG_INFO, "accepted connection from %s", client_ip4_str);
+    syslog(LOG_NOTICE, "accepted connection from %s", client_ip4_str);
 
     // Allocate a worker list entry and move ownership of the worker pointer
     struct aesd_worker_entry *entry = aesd_worker_entry_new(worker);
@@ -190,13 +177,6 @@ static void check_workers(struct aesd_server *self)
             entry = NULL;
         }
     }
-    if (SLIST_EMPTY(&self->workers_)) {
-        pthread_mutex_lock(&self->output_fd_);
-        syslog(LOG_INFO, "closing %s", self->output_path_);
-        close(self->output_fd_);
-        self->output_fd_ = -1;
-        pthread_mutex_unlock(&self->output_fd_);
-    }
 }
 
 /**
@@ -231,12 +211,6 @@ static void srv_shutdown(struct aesd_server *self)
         entry = NULL;
     }
 
-    // Close the output file
-    if (self->output_fd_ != -1) {
-        if (-1 == close(self->output_fd_)) {
-            perror("close output file");
-        }
-    }
     // Delete the output if not a device
     if (!self->char_dev_) {
         if (-1 == unlink(self->output_path_)) {
@@ -244,7 +218,7 @@ static void srv_shutdown(struct aesd_server *self)
         }
     }
 
-    pthread_mutex_destroy(&self->output_fd_lock_);
+    pthread_mutex_destroy(&self->output_lock_);
 }
 
 /** @brief  Timer alarm signal handler. */
@@ -263,18 +237,21 @@ static void alarm_handler(int sig, siginfo_t *si, void *uc)
 
         // Write the string to the output file
         struct aesd_server *self = si->si_value.sival_ptr;
-        pthread_mutex_lock(&self->output_fd_lock_);
-        if (!self->char_dev_) {
-            // Seek to the end of the file
-            if (-1 == lseek(self->output_fd_, 0, SEEK_END)) {
-                perror("timer lseek");
+        pthread_mutex_lock(&self->output_lock_);
+        int output_fd = open(self->output_path_, O_WRONLY | O_CREAT | O_APPEND, 0644);
+        if (-1 == output_fd) {
+            perror("timer open output");
+        }
+        else {
+            if (-1 == write(output_fd, timestamp_str, timestamp_str_len)) {
+                perror("timer write");
+            }
+            if (-1 == close(output_fd)) {
+                perror("timer close output");
             }
         }
-        // Write to disk
-        else if (-1 == write(self->output_fd_, timestamp_str, timestamp_str_len)) {
-            perror("timer write");
-        }
-        pthread_mutex_unlock(&self->output_fd_lock_);
+
+        pthread_mutex_unlock(&self->output_lock_);
     }
 }
 
@@ -335,9 +312,8 @@ void aesd_server_init(
     self->running = false;
     self->buf_size_ = buf_size;
     self->char_dev_ = char_dev;
-    self->output_fd_ = -1;
     self->output_path_ = output_path;
-    pthread_mutex_init(&self->output_fd_lock_, NULL);
+    pthread_mutex_init(&self->output_lock_, NULL);
     self->port_ = "";
     self->sock_fd_ = -1;
     self->timer_ = NULL;

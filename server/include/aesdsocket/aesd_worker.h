@@ -28,10 +28,10 @@ struct aesd_worker
     size_t buf_size_;
     /** @brief  If `true`, indicates the output file is a char device, not a plain file. */
     bool char_dev_;
-    /** @brief  Output file descriptor. */
-    int output_fd_;
     /** @brief  Mutex for synchronizing access to the output file. */
-    pthread_mutex_t *output_fd_lock_;
+    pthread_mutex_t *output_lock_;
+    /** @brief  Output file descriptor. */
+    const char *output_path_;
 };
 
 /**
@@ -39,13 +39,13 @@ struct aesd_worker
  *
  * @param   buf_size        Size of the worker buffer in bytes.
  * @param   char_dev        Output file is a character device, not a plain file.
- * @param   output_fd       Output file descriptor.
- * @param   output_fd_lock  Mutex for synchronizing acces to the output file.
+ * @param   output_path     Path to the output file.
+ * @param   output_lock     Mutex for synchronizing access to the output file.
  *
  * @return  Pointer to the allocated worker if successful, NULL on failure.
  */
 struct aesd_worker *aesd_worker_new(
-    size_t buf_size, bool char_dev, int output_fd, pthread_mutex_t *output_fd_lock
+    size_t buf_size, bool char_dev, const char *output_path, pthread_mutex_t *output_lock
 );
 
 /**
@@ -90,8 +90,7 @@ SLIST_HEAD(aesd_worker_slist, aesd_worker_entry);
  */
 static inline struct aesd_worker_entry *aesd_worker_entry_new(struct aesd_worker *worker)
 {
-    struct aesd_worker_entry *self
-        = (struct aesd_worker_entry *)malloc(sizeof(struct aesd_worker_entry));
+    struct aesd_worker_entry *self = malloc(sizeof(struct aesd_worker_entry));
     if (self != NULL) {
         self->worker = worker;
     }
@@ -106,7 +105,6 @@ static inline struct aesd_worker_entry *aesd_worker_entry_new(struct aesd_worker
 static inline void aesd_worker_entry_delete(struct aesd_worker_entry *self)
 {
     aesd_worker_delete(self->worker);
-    self->worker = NULL;
     free(self);
 }
 
@@ -122,7 +120,7 @@ static inline bool aesd_worker_entry_start(struct aesd_worker_entry *self)
     int error = pthread_create(&self->tid, NULL, aesd_worker_main, self->worker);
     if (error) {
         errno = error;
-        perror("pthread_create");
+        perror("worker pthread_create");
         return false;
     }
     return true;
@@ -136,7 +134,7 @@ static inline bool aesd_worker_entry_start(struct aesd_worker_entry *self)
 static inline void aesd_worker_entry_join(struct aesd_worker_entry *self)
 {
     if (-1 == pthread_join(self->tid, NULL)) {
-        perror("pthread_join");
+        perror("worker pthread_join");
     }
 }
 

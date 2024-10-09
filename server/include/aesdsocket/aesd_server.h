@@ -22,12 +22,10 @@ struct aesd_server
     size_t buf_size_;
     /** @brief  If `true`, indicates the output file is a char device, not a plain file. */
     bool char_dev_;
-    /** @brief  Output file descriptor. */
-    int output_fd_;
     /** @brief  Path to the output file. */
     const char *output_path_;
     /** @brief  Mutex for output file. */
-    pthread_mutex_t output_fd_lock_;
+    pthread_mutex_t output_lock_;
     /** @brief  Port on which the server is listening. */
     const char *port_;
     /** @brief  Socket fd for the server. */

@@ -128,7 +128,7 @@ static int daemonize(void)
  */
 static void signal_handler(int sig)
 {
-    syslog(LOG_INFO, "caught signal, exiting");
+    syslog(LOG_NOTICE, "caught signal, exiting");
     if (sig == SIGINT || sig == SIGTERM) {
         g_srv.running = false;
     } else {
@@ -182,14 +182,18 @@ int main(int argc, const char **argv)
     }
 
     // Initialize syslog
-    openlog("aesdsocket", 0, LOG_USER);
+    int facility = LOG_USER;
+    if (daemon) {
+        facility = LOG_DAEMON;
+    }
+    openlog("aesdsocket", 0, facility);
 
     // Register signal handlers for SIGINT and SIGTERM
     handle(SIGINT);
     handle(SIGTERM);
 
     syslog(
-        LOG_INFO,
+        LOG_NOTICE,
         "starting server: daemon=%d, output_file='%s', char_device=%d, port=%s",
         daemon,
         OUTPUT_FILE,
@@ -198,6 +202,6 @@ int main(int argc, const char **argv)
     );
     aesd_server_init(&g_srv, BUF_SIZE, USE_AESD_CHAR_DEVICE, OUTPUT_FILE);
     int result = aesd_server_run(&g_srv, PORT, BACKLOG);
-    syslog(LOG_INFO, "server exiting with code %d", result);
+    syslog(LOG_NOTICE, "server exiting with code %d", result);
     return result;
 }

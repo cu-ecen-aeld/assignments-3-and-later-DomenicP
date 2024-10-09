@@ -1,5 +1,6 @@
 #include "aesdsocket/aesd_worker.h"
 
+#include <fcntl.h>
 #include <string.h>
 #include <syslog.h>
 #include <unistd.h>
@@ -15,51 +16,56 @@
  */
 static bool receive_data(struct aesd_worker *self)
 {
+    bool error = false;
+
     // START CRITICAL REGION: output_fd
-    pthread_mutex_lock(self->output_fd_lock_);
+    pthread_mutex_lock(self->output_lock_);
+
+    int output_fd = open(self->output_path_, O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (-1 == output_fd) {
+        perror("worker open for writing");
+        error = true;
+        goto out_unlock_mutex;
+    }
 
     // Loop until all data has been received
     bool done = false;
-    bool error = false;
     while (!done && !self->shutdown) {
         // Reset the buffer
         memset(self->buf_, 0, self->buf_size_);
 
         // Receive the next data chunk
         if (-1 == recv(self->client_fd, self->buf_, self->buf_size_, 0)) {
-            perror("recv");
+            perror("worker recv");
             error = true;
-            break;
+            goto out_close_file;
         }
 
         // Default to write the whole buffer
         size_t n = self->buf_size_;
 
         // Search for newline
-        char *pnewline = memchr(self->buf_, '\n', self->buf_size_);
-        if (pnewline != NULL) {
+        char *search_result = memchr(self->buf_, '\n', self->buf_size_);
+        if (search_result != NULL) {
             // Write only up to the newline and be done
             done = true;
-            n = (size_t)(pnewline - self->buf_ + 1);
+            n = (size_t)(search_result - self->buf_ + 1);
         }
 
-        // Seek to the end of the file
-        if (!self->char_dev_) {
-            if (-1 == lseek(self->output_fd_, 0, SEEK_END)) {
-                perror("lseek");
-                error = true;
-                break;
-            }
-        }
         // Write to disk
-        if (-1 == write(self->output_fd_, self->buf_, n)) {
-            perror("write");
+        if (-1 == write(output_fd, self->buf_, n)) {
+            perror("worker write");
             error = true;
-            break;
+            goto out_close_file;
         }
     }
 
-    pthread_mutex_unlock(self->output_fd_lock_);
+out_close_file:
+    if (-1 == close(output_fd)) {
+        perror("worker close");
+    }
+out_unlock_mutex:
+    pthread_mutex_unlock(self->output_lock_);
     // END CRITICAL REGION: output_fd
 
     return !error && !self->shutdown;
@@ -79,37 +85,39 @@ static bool send_response(struct aesd_worker *self)
     bool result = false;
 
     // START CRITICAL REGION: output_fd
-    pthread_mutex_lock(self->output_fd_lock_);
+    pthread_mutex_lock(self->output_lock_);
 
-    if (!self->char_dev_) {
-        // Seek to the start of the file
-        if (-1 == lseek(self->output_fd_, 0, SEEK_SET)) {
-            perror("lseek");
-            goto out;
-        }
+    int output_fd = open(self->output_path_, O_RDONLY);
+    if (-1 == output_fd) {
+        perror("worker open for reading");
+        goto out_unlock_mutex;
     }
 
     // Loop until the entire response has been sent
     bool done = false;
     while (!done && !self->shutdown) {
-        ssize_t n = read(self->output_fd_, self->buf_, self->buf_size_);
+        ssize_t n = read(output_fd, self->buf_, self->buf_size_);
         if (-1 == n) {
-            perror("read");
-            goto out;
+            perror("worker read");
+            goto out_close_file;
         }
         else if (self->buf_[n - 1] == '\n') {
             done = true;
         }
         if (-1 == send(self->client_fd, self->buf_, (size_t)n, 0)) {
-            perror("send");
-            goto out;
+            perror("worker send");
+            goto out_close_file;
         }
     }
 
     result = !self->shutdown;
 
-out:
-    pthread_mutex_unlock(self->output_fd_lock_);
+out_close_file:
+    if (-1 == close(output_fd)) {
+        perror("worker close");
+    }
+out_unlock_mutex:
+    pthread_mutex_unlock(self->output_lock_);
     // END CRITICAL REGION: output_fd
 
     return result;
@@ -130,12 +138,12 @@ static void close_client(struct aesd_worker *self)
         // Log the client disconnection
         char client_ip4_str[INET_ADDRSTRLEN];
         inet_ntop(AF_INET, &self->client_addr.sin_addr, client_ip4_str, INET_ADDRSTRLEN);
-        syslog(LOG_INFO, "Closed connection from %s", client_ip4_str);
+        syslog(LOG_NOTICE, "closed connection from %s", client_ip4_str);
     }
 }
 
 struct aesd_worker *aesd_worker_new(
-    size_t buf_size, bool char_dev, int output_fd, pthread_mutex_t *output_fd_lock
+    size_t buf_size, bool char_dev, const char *output_path, pthread_mutex_t *output_fd_lock
 ) {
     // Allocate self
     struct aesd_worker *self = (struct aesd_worker *)malloc(sizeof(struct aesd_worker));
@@ -160,8 +168,8 @@ struct aesd_worker *aesd_worker_new(
     self->exited = false;
     self->shutdown = false;
     self->char_dev_ = char_dev;
-    self->output_fd_ = output_fd;
-    self->output_fd_lock_ = output_fd_lock;
+    self->output_lock_ = output_fd_lock;
+    self->output_path_ = output_path;
 
     return self;
 }
