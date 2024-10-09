@@ -67,11 +67,11 @@ struct aesd_buffer_entry *aesd_circular_buffer_find_entry_offset_for_fpos(
 *
 * @return   Pointer to data from overwritten entry to be freed by the user.
 */
-char *aesd_circular_buffer_add_entry(
+const char *aesd_circular_buffer_add_entry(
     struct aesd_circular_buffer *buffer,
     const struct aesd_buffer_entry *entry
 ) {
-    char *result = NULL;
+    const char *result = NULL;
     if (buffer->full) {
         result = buffer->entry[buffer->out_offs].buffptr;
         buffer->out_offs = (buffer->out_offs + 1) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;

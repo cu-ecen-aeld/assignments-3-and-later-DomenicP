@@ -113,32 +113,35 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count, loff
     if (dev->entry.buffptr == NULL) {
         // Allocate a fresh buffer since there's no data from a previous write
         PDEBUG("write new entry");
-        dev->entry.buffptr = kzalloc(count, GFP_KERNEL);
-        if (dev->entry.buffptr == NULL) {
+        char *kbuf = kzalloc(count, GFP_KERNEL);
+        if (kbuf == NULL) {
             result = -ENOMEM;
             goto out;
         }
-        if (copy_from_user(dev->entry.buffptr, buf, count)) {
+        if (copy_from_user(kbuf, buf, count)) {
             result = -EFAULT;
+            kfree(kbuf);
             goto out;
         }
+        dev->entry.buffptr = kbuf;
     } else {
         // Allocate a larger buffer to append to the previous write
         PDEBUG("write append entry");
-        char *new_buf = kzalloc(dev->entry.size + count, GFP_KERNEL);
-        if (new_buf == NULL) {
+        char *kbuf = kzalloc(dev->entry.size + count, GFP_KERNEL);
+        if (kbuf == NULL) {
             result = -ENOMEM;
             goto out;
         }
         // Copy over the previous data and swap the buffer pointer
-        memcpy(new_buf, dev->entry.buffptr, dev->entry.size);
+        memcpy(kbuf, dev->entry.buffptr, dev->entry.size);
         kfree(dev->entry.buffptr);
-        dev->entry.buffptr = new_buf;
         // Copy in the new data from the user
-        if (copy_from_user(new_buf + dev->entry.size, buf, count)) {
+        if (copy_from_user(kbuf + dev->entry.size, buf, count)) {
             result = -EFAULT;
+            kfree(kbuf);
             goto out;
         }
+        dev->entry.buffptr = kbuf;
     }
     dev->entry.size += count;
     result = count;
@@ -153,7 +156,7 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count, loff
     PDEBUG("write buf locked");
     if (dev->entry.buffptr[dev->entry.size - 1] == '\n') {
         PDEBUG("write push entry");
-        char *old_data = aesd_circular_buffer_add_entry(&dev->buf, &dev->entry);
+        const char *old_data = aesd_circular_buffer_add_entry(&dev->buf, &dev->entry);
         // Clean up old entry data dropped from the buffer
         if (old_data != NULL) {
             PDEBUG("write drop entry");
