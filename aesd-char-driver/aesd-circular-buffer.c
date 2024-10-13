@@ -91,3 +91,15 @@ void aesd_circular_buffer_init(struct aesd_circular_buffer *buffer)
 {
     memset(buffer, 0, sizeof(struct aesd_circular_buffer));
 }
+
+struct aesd_buffer_entry *aesd_circular_buffer_get_entry_at_out_index(
+    struct aesd_circular_buffer *buffer,
+    size_t i
+) {
+    size_t out_index = (buffer->out_offs + i) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
+    struct aesd_buffer_entry *result = &buffer->entry[out_index];
+    if (result->buffptr == NULL) {
+        result = NULL;
+    }
+    return result;
+}

@@ -1,4 +1,5 @@
 #include "aesdsocket/aesd_worker.h"
+#include "aesdsocket/aesd_ioctl.h"
 
 #include <fcntl.h>
 #include <string.h>
@@ -47,6 +48,25 @@ static bool receive_data(struct aesd_worker *self)
         // Search for newline
         char *search_result = memchr(self->buf_, '\n', self->buf_size_);
         if (search_result != NULL) {
+            // Check for in-band seek command
+            struct aesd_seekto seekto = {0};
+            int match_count = sscanf(
+                self->buf_,
+                "AESDCHAR_IOCSEEKTO:%u,%u\n",
+                &seekto.write_cmd,
+                &seekto.write_cmd_offset
+            );
+            if (match_count == 2) {
+                syslog(
+                    LOG_NOTICE,
+                    "ioctl AESDCHAR_IOCSEEKTO %u %u",
+                    seekto.write_cmd,
+                    seekto.write_cmd_offset
+                );
+                ioctl(output_fd, AESDCHAR_IOCSEEKTO, &seekto);
+                goto out_close_file;
+            }
+
             // Write only up to the newline and be done
             done = true;
             n = (size_t)(search_result - self->buf_ + 1);

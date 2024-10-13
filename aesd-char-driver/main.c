@@ -22,6 +22,7 @@
 #include <linux/uaccess.h>
 
 #include "aesdchar.h"
+#include "aesd_ioctl.h"
 
 MODULE_AUTHOR("DomenicP");
 MODULE_LICENSE("Dual BSD/GPL");
@@ -46,6 +47,33 @@ int aesd_release(struct inode *inode, struct file *filp)
      * TODO: handle release
      */
     return 0;
+}
+
+loff_t aesd_llseek(struct file *filp, loff_t offset, int whence)
+{
+    const char *directive = "UNKNOWN";
+    switch (whence) {
+        case SEEK_SET: directive = "SEEK_SET"; break;
+        case SEEK_CUR: directive = "SEEK_CUR"; break;
+        case SEEK_END: directive = "SEEK_END"; break;
+        default: break;
+    }
+    PDEBUG("llseek with offset %lld and directive %s", offset, directive);
+
+    struct aesd_dev *dev = filp->private_data;
+    if (mutex_lock_interruptible(&dev->buf_lock)) {
+        PDEBUG("llseek lock interrupted");
+        return -ERESTARTSYS;
+    }
+    size_t total_size = 0;
+    int i = 0;
+    struct aesd_buffer_entry *entry = NULL;
+    AESD_CIRCULAR_BUFFER_FOREACH(entry, &g_aesd_device.buf, i) {
+        total_size += entry->size;
+    }
+    loff_t result = fixed_size_llseek(filp, offset, whence, total_size);
+    mutex_unlock(&dev->buf_lock);
+    return result;
 }
 
 ssize_t aesd_read(struct file *filp, char __user *buf, size_t count, loff_t *f_pos)
@@ -144,7 +172,6 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count, loff
         dev->entry.buffptr = kbuf;
     }
     dev->entry.size += count;
-    result = count;
 
     // Check for newline to mark the end of the entry
     PDEBUG("write locking buf");
@@ -166,6 +193,8 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count, loff
         dev->entry.buffptr = NULL;
         dev->entry.size = 0;
     }
+    result = count;
+    *f_pos += count;
     mutex_unlock(&dev->buf_lock);
     PDEBUG("write buf unlocked");
 
@@ -175,12 +204,85 @@ out:
     return result;
 }
 
+long aesd_adjust_file_offset(struct file *filp, uint32_t write_cmd, uint32_t write_cmd_offset)
+{
+    PDEBUG(
+        "adjust_file_offset with write_cmd=%u and write_cmd_offset=%u", write_cmd, write_cmd_offset
+    );
+
+    struct aesd_dev *dev = filp->private_data;
+    long result = 0;
+
+    // Simple bounds check that doesn't require locking the mutex
+    if (write_cmd >= AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED) {
+        result = -EINVAL;
+        goto out;
+    }
+    if (mutex_lock_interruptible(&dev->buf_lock)) {
+        PDEBUG("write lock interrupted");
+        result = -ERESTARTSYS;
+        goto out;
+    }
+    // Start by adding up write cmd lengths
+    loff_t f_pos = 0;
+    struct aesd_buffer_entry *entry = NULL;
+    for (size_t i = 0; i < write_cmd; i++) {
+        entry = aesd_circular_buffer_get_entry_at_out_index(&dev->buf, i);
+        if (entry == NULL) {
+            result = -EINVAL;
+            goto out_unlock_buf;
+        }
+        f_pos += entry->size;
+    }
+    // Then check the offset into the final write command
+    entry = aesd_circular_buffer_get_entry_at_out_index(&dev->buf, write_cmd);
+    if (entry == NULL) {
+        result = -EINVAL;
+        goto out_unlock_buf;
+    }
+    if (write_cmd_offset >= entry->size) {
+        result = -EINVAL;
+        goto out_unlock_buf;
+    }
+    f_pos += write_cmd_offset;
+    // Overwrite f_pos
+    filp->f_pos = f_pos;
+out_unlock_buf:
+    mutex_unlock(&dev->buf_lock);
+out:
+    return result;
+}
+
+long aesd_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+{
+    PDEBUG("ioctl with cmd=%u and arg=%lu", cmd, arg);
+    long result = 0;
+    switch (cmd) {
+        case AESDCHAR_IOCSEEKTO:
+        {
+            struct aesd_seekto seekto = {0};
+            if (copy_from_user(&seekto, (const void __user *)arg, sizeof(seekto)) != 0) {
+                result = -EFAULT;
+            } else {
+                result = aesd_adjust_file_offset(filp, seekto.write_cmd, seekto.write_cmd_offset);
+            }
+            break;
+        }
+        default:
+            PDEBUG("unsupported ioctl");
+            break;
+    }
+    return result;
+}
+
 struct file_operations g_aesd_fops = {
-    .owner =    THIS_MODULE,
-    .read =     aesd_read,
-    .write =    aesd_write,
-    .open =     aesd_open,
-    .release =  aesd_release,
+    .owner   = THIS_MODULE,
+    .llseek  = aesd_llseek,
+    .read    = aesd_read,
+    .write   = aesd_write,
+    .unlocked_ioctl = aesd_ioctl,
+    .open    = aesd_open,
+    .release = aesd_release,
 };
 
 static int aesd_setup_cdev(struct aesd_dev *dev)
@@ -223,7 +325,7 @@ void aesd_cleanup_module(void)
     dev_t devno = MKDEV(g_aesd_major, g_aesd_minor);
 
     // Free any remaining buffer entries
-    int i;
+    int i = 0;
     struct aesd_buffer_entry *entry = NULL;
     AESD_CIRCULAR_BUFFER_FOREACH(entry, &g_aesd_device.buf, i) {
         if (entry->buffptr != NULL) {
