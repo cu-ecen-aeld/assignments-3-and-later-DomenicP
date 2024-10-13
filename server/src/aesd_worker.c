@@ -15,19 +15,9 @@
  *
  * @return true if successful, false otherwise.
  */
-static bool receive_data(struct aesd_worker *self)
+static bool receive_data(struct aesd_worker *self, int output_fd)
 {
     bool error = false;
-
-    // START CRITICAL REGION: output_fd
-    pthread_mutex_lock(self->output_lock_);
-
-    int output_fd = open(self->output_path_, O_WRONLY | O_CREAT | O_APPEND, 0644);
-    if (-1 == output_fd) {
-        perror("worker open for writing");
-        error = true;
-        goto out_unlock_mutex;
-    }
 
     // Loop until all data has been received
     bool done = false;
@@ -39,7 +29,7 @@ static bool receive_data(struct aesd_worker *self)
         if (-1 == recv(self->client_fd, self->buf_, self->buf_size_, 0)) {
             perror("worker recv");
             error = true;
-            goto out_close_file;
+            goto out;
         }
 
         // Default to write the whole buffer
@@ -64,7 +54,7 @@ static bool receive_data(struct aesd_worker *self)
                     seekto.write_cmd_offset
                 );
                 ioctl(output_fd, AESDCHAR_IOCSEEKTO, &seekto);
-                goto out_close_file;
+                goto out;
             }
 
             // Write only up to the newline and be done
@@ -76,18 +66,14 @@ static bool receive_data(struct aesd_worker *self)
         if (-1 == write(output_fd, self->buf_, n)) {
             perror("worker write");
             error = true;
-            goto out_close_file;
+            goto out;
+        }
+        if (-1 == lseek(output_fd, 0, SEEK_SET)) {
+            perror ("worker lseek");
         }
     }
 
-out_close_file:
-    if (-1 == close(output_fd)) {
-        perror("worker close");
-    }
-out_unlock_mutex:
-    pthread_mutex_unlock(self->output_lock_);
-    // END CRITICAL REGION: output_fd
-
+out:
     return !error && !self->shutdown;
 }
 
@@ -100,18 +86,9 @@ out_unlock_mutex:
  *
  * @return true if successful, false otherwise.
  */
-static bool send_response(struct aesd_worker *self)
+static bool send_response(struct aesd_worker *self, int output_fd)
 {
     bool result = false;
-
-    // START CRITICAL REGION: output_fd
-    pthread_mutex_lock(self->output_lock_);
-
-    int output_fd = open(self->output_path_, O_RDONLY);
-    if (-1 == output_fd) {
-        perror("worker open for reading");
-        goto out_unlock_mutex;
-    }
 
     // Loop until the entire response has been sent
     bool done = false;
@@ -119,27 +96,20 @@ static bool send_response(struct aesd_worker *self)
         ssize_t n = read(output_fd, self->buf_, self->buf_size_);
         if (-1 == n) {
             perror("worker read");
-            goto out_close_file;
+            goto out;
         }
         else if (0 == n) {
             done = true;
         }
         if (-1 == send(self->client_fd, self->buf_, (size_t)n, 0)) {
             perror("worker send");
-            goto out_close_file;
+            goto out;
         }
     }
 
     result = !self->shutdown;
 
-out_close_file:
-    if (-1 == close(output_fd)) {
-        perror("worker close");
-    }
-out_unlock_mutex:
-    pthread_mutex_unlock(self->output_lock_);
-    // END CRITICAL REGION: output_fd
-
+out:
     return result;
 }
 
@@ -197,12 +167,28 @@ struct aesd_worker *aesd_worker_new(
 void *aesd_worker_main(void *arg)
 {
     struct aesd_worker *self = arg;
-    if (!receive_data(self)) {
+
+    int output_fd = open(self->output_path_, O_RDWR | O_CREAT | O_APPEND, 0644);
+    if (-1 == output_fd) {
+        perror("worker open file");
+        goto out_close_client;
+    }
+    pthread_mutex_lock(self->output_lock_);
+    if (!receive_data(self, output_fd)) {
         fprintf(stderr, "error receiving client data\n");
+        goto out_unlock_mutex;
     }
-    else if (!send_response(self)) {
+    if (!send_response(self, output_fd)) {
         fprintf(stderr, "error sending client response\n");
+        goto out_unlock_mutex;
     }
+out_unlock_mutex:
+    pthread_mutex_unlock(self->output_lock_);
+    if (-1 == close(output_fd)) {
+        perror("worker close file");
+    }
+
+out_close_client:
     close_client(self);
     self->exited = true;
     pthread_exit(NULL);
