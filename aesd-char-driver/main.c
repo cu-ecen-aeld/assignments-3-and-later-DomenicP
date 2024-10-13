@@ -215,6 +215,9 @@ long aesd_adjust_file_offset(struct file *filp, uint32_t write_cmd, uint32_t wri
 
     // Simple bounds check that doesn't require locking the mutex
     if (write_cmd >= AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED) {
+        PDEBUG(
+            "write_cmd %u greater than max %u", write_cmd, AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED
+        );
         result = -EINVAL;
         goto out;
     }
@@ -229,6 +232,7 @@ long aesd_adjust_file_offset(struct file *filp, uint32_t write_cmd, uint32_t wri
     for (size_t i = 0; i < write_cmd; i++) {
         entry = aesd_circular_buffer_get_entry_at_out_index(&dev->buf, i);
         if (entry == NULL) {
+            PDEBUG("no write_cmd found at index %u", i);
             result = -EINVAL;
             goto out_unlock_buf;
         }
@@ -237,15 +241,18 @@ long aesd_adjust_file_offset(struct file *filp, uint32_t write_cmd, uint32_t wri
     // Then check the offset into the final write command
     entry = aesd_circular_buffer_get_entry_at_out_index(&dev->buf, write_cmd);
     if (entry == NULL) {
+        PDEBUG("no write_cmd found at index %d", write_cmd);
         result = -EINVAL;
         goto out_unlock_buf;
     }
     if (write_cmd_offset >= entry->size) {
+        PDEBUG("write_cmd_offset %u greater than entry size %u", write_cmd_offset, entry->size);
         result = -EINVAL;
         goto out_unlock_buf;
     }
     f_pos += write_cmd_offset;
     // Overwrite f_pos
+    PDEBUG("setting f_pos = %llu", f_pos);
     filp->f_pos = f_pos;
 out_unlock_buf:
     mutex_unlock(&dev->buf_lock);
